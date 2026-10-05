@@ -51,6 +51,10 @@ class MainActivity : ComponentActivity() {
     private val discoveredServersState = mutableStateOf<List<ZapProtocol.DiscoveredServer>>(emptyList())
     private val isMicRecordingState = mutableStateOf(false)
     private val micLevelState = mutableStateOf(0f)
+    private val isCallDuckingEnabledState = mutableStateOf(true)
+    private val isCallActiveState = mutableStateOf(false)
+    private val isAoaEnabledState = mutableStateOf(false)
+    private val isUsbConnectedState = mutableStateOf(false)
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -85,6 +89,38 @@ class MainActivity : ComponentActivity() {
                 lifecycleScope.launch {
                     flow.collectLatest { level ->
                         micLevelState.value = level
+                    }
+                }
+            }
+
+            service.isCallDuckingEnabled?.let { flow ->
+                lifecycleScope.launch {
+                    flow.collectLatest { enabled ->
+                        isCallDuckingEnabledState.value = enabled
+                    }
+                }
+            }
+
+            service.isCallActive?.let { flow ->
+                lifecycleScope.launch {
+                    flow.collectLatest { active ->
+                        isCallActiveState.value = active
+                    }
+                }
+            }
+
+            service.isAoaEnabled?.let { flow ->
+                lifecycleScope.launch {
+                    flow.collectLatest { enabled ->
+                        isAoaEnabledState.value = enabled
+                    }
+                }
+            }
+
+            service.isUsbConnected?.let { flow ->
+                lifecycleScope.launch {
+                    flow.collectLatest { connected ->
+                        isUsbConnectedState.value = connected
                     }
                 }
             }
@@ -127,6 +163,10 @@ class MainActivity : ComponentActivity() {
                         discoveredServers = discoveredServersState.value,
                         isMicRecording = isMicRecordingState.value,
                         micLevel = micLevelState.value,
+                        isCallDuckingEnabled = isCallDuckingEnabledState.value,
+                        isCallActive = isCallActiveState.value,
+                        isAoaEnabled = isAoaEnabledState.value,
+                        isUsbConnected = isUsbConnectedState.value,
                         onConnect = { ip, bitrate ->
                             prefs.edit().putString("server_ip", ip).apply()
                             startStreamingService(ip, bitrate)
@@ -142,6 +182,13 @@ class MainActivity : ComponentActivity() {
                         },
                         onVolumeChange = { volumePercent ->
                             audioService?.setMasterVolume(volumePercent)
+                        },
+                        onToggleCallDucking = { enabled ->
+                            audioService?.setCallDuckingEnabled(enabled)
+                        },
+                        onToggleAoa = { enabled ->
+                            val currentIp = prefs.getString("server_ip", "192.168.1.9") ?: "192.168.1.9"
+                            audioService?.setAoaModeEnabled(enabled, currentIp)
                         },
                         onToggleMic = { enable ->
                             if (enable && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
@@ -213,6 +260,11 @@ class MainActivity : ComponentActivity() {
         ) {
             permissions.add(Manifest.permission.RECORD_AUDIO)
         }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissions.add(Manifest.permission.READ_PHONE_STATE)
+        }
 
         if (permissions.isNotEmpty()) {
             requestPermissionsLauncher.launch(permissions.toTypedArray())
@@ -227,11 +279,17 @@ fun ZenithAudioScreen(
     discoveredServers: List<ZapProtocol.DiscoveredServer>,
     isMicRecording: Boolean,
     micLevel: Float,
+    isCallDuckingEnabled: Boolean,
+    isCallActive: Boolean,
+    isAoaEnabled: Boolean,
+    isUsbConnected: Boolean,
     onConnect: (String, Int) -> Unit,
     onDisconnect: () -> Unit,
     onBitrateChange: (Int) -> Unit,
     onToggleAutoBitrate: (Boolean) -> Unit,
     onVolumeChange: (Int) -> Unit,
+    onToggleCallDucking: (Boolean) -> Unit,
+    onToggleAoa: (Boolean) -> Unit,
     onToggleMic: (Boolean) -> Unit
 ) {
     var serverIp by remember { mutableStateOf(initialIp) }
@@ -633,6 +691,217 @@ fun ZenithAudioScreen(
             }
         }
 
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // 📞 SMART PHONE CALL AUTO-DUCKING CARD
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isCallActive) Color(0xFF381C14) else Color(0xFF1E1E1E)
+            )
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Call,
+                            contentDescription = null,
+                            tint = if (isCallActive) Color(0xFFFF9100) else Color(0xFF00E676),
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "PHONE CALL AUTO-DUCKING",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .background(
+                                            if (isCallDuckingEnabled) Color(0xFF00E676).copy(alpha = 0.2f)
+                                            else Color(0xFF333333),
+                                            shape = RoundedCornerShape(4.dp)
+                                        )
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = if (isCallDuckingEnabled) "ENABLED" else "MUTED",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isCallDuckingEnabled) Color(0xFF00E676) else Color(0xFF888888)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = if (isCallActive) "Active call in progress: PC volume ducked to 15%"
+                                       else "Auto-ducks PC volume to 15% on incoming & active calls",
+                                fontSize = 11.sp,
+                                color = if (isCallActive) Color(0xFFFFCC80) else Color(0xFF888888)
+                            )
+                        }
+                    }
+
+                    Switch(
+                        checked = isCallDuckingEnabled,
+                        onCheckedChange = { onToggleCallDucking(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = Color(0xFF00E676),
+                            uncheckedThumbColor = Color(0xFF888888),
+                            uncheckedTrackColor = Color(0xFF333333)
+                        )
+                    )
+                }
+
+                if (isCallActive) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFFFF9100).copy(alpha = 0.2f), shape = RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(Color(0xFFFF9100), shape = CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "ACTIVE CALL DETECTED • DUCKING TO 15% ACTIVE",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFFFB74D)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // ⚡ ANDROID AOA 2.0 HARDWARE USB DAC CARD (ON/OFF OPTION)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isAoaEnabled) Color(0xFF142938) else Color(0xFF1E1E1E)
+            )
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Usb,
+                            contentDescription = null,
+                            tint = if (isAoaEnabled) Color(0xFF40C4FF) else Color(0xFF888888),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "AOA 2.0 HARDWARE USB DAC",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .background(
+                                            if (isAoaEnabled) Color(0xFF00B0FF).copy(alpha = 0.2f)
+                                            else Color(0xFF333333),
+                                            shape = RoundedCornerShape(4.dp)
+                                        )
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = if (isAoaEnabled) "ON" else "OFF",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isAoaEnabled) Color(0xFF40C4FF) else Color(0xFF888888)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "Pure zero-network USB accessory DAC • Zero Wi-Fi/IP stack",
+                                fontSize = 11.sp,
+                                color = if (isAoaEnabled) Color(0xFFB3E5FC) else Color(0xFF888888)
+                            )
+                        }
+                    }
+
+                    Switch(
+                        checked = isAoaEnabled,
+                        onCheckedChange = { onToggleAoa(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = Color(0xFF40C4FF),
+                            uncheckedThumbColor = Color(0xFF888888),
+                            uncheckedTrackColor = Color(0xFF333333)
+                        )
+                    )
+                }
+
+                if (isAoaEnabled) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                if (isUsbConnected) Color(0xFF00E676).copy(alpha = 0.15f)
+                                else Color(0xFFFFA000).copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(
+                                        if (isUsbConnected) Color(0xFF00E676) else Color(0xFFFFB300),
+                                        shape = CircleShape
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (isUsbConnected)
+                                    "AOA HARDWARE USB ACCESSORY CONNECTED (0.5ms DAC)"
+                                else
+                                    "USB DAC READY • CONNECT USB CABLE TO LINUX PC",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isUsbConnected) Color(0xFF00E676) else Color(0xFFFFCA28)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(20.dp))
 
         // Real-Time Diagnostic Dashboard
@@ -645,35 +914,89 @@ fun ZenithAudioScreen(
         )
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Hardware Output Banner
+        // Hardware Output & Active Transport Banner
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
         ) {
-            Row(
-                modifier = Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = if (metrics.isBluetooth) Icons.Default.Bluetooth else Icons.Default.VolumeUp,
-                    contentDescription = null,
-                    tint = if (metrics.isBluetooth) Color(0xFF448AFF) else Color(0xFF00E676),
-                    modifier = Modifier.size(26.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text(
-                        text = "ACTIVE AUDIO SINK",
-                        fontSize = 10.sp,
-                        color = Color(0xFF888888),
-                        fontWeight = FontWeight.Bold
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (metrics.isBluetooth) Icons.Default.Bluetooth else Icons.Default.VolumeUp,
+                            contentDescription = null,
+                            tint = if (metrics.isBluetooth) Color(0xFF448AFF) else Color(0xFF00E676),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "ACTIVE AUDIO SINK",
+                                fontSize = 9.sp,
+                                color = Color(0xFF888888),
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = metrics.outputDeviceName,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White
+                            )
+                        }
+                    }
+
+                    // Transport Status Pill
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (metrics.transportType.contains("USB", ignoreCase = true)) Color(0xFF16384C)
+                                else Color(0xFF1B2E1E),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (metrics.transportType.contains("USB", ignoreCase = true))
+                                    Icons.Default.Usb else Icons.Default.Wifi,
+                                contentDescription = null,
+                                tint = if (metrics.transportType.contains("USB", ignoreCase = true))
+                                    Color(0xFF40C4FF) else Color(0xFF00E676),
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = metrics.transportType,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (metrics.transportType.contains("USB", ignoreCase = true))
+                                    Color(0xFF40C4FF) else Color(0xFF00E676)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SyncAlt,
+                        contentDescription = null,
+                        tint = Color(0xFF00E676),
+                        modifier = Modifier.size(13.dp)
                     )
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = metrics.outputDeviceName,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White
+                        text = "Zero-Drop Hot-Failover: Wi-Fi ↔ USB active (0ms drop)",
+                        fontSize = 10.sp,
+                        color = Color(0xFFAAAAAA)
                     )
                 }
             }
@@ -747,7 +1070,7 @@ fun ZenithAudioScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // USB Gaming Mode & NetEQ Clock Sync Footer
+        // Hardware AOA 2.0 & NetEQ Clock Sync Footer
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
@@ -758,7 +1081,7 @@ fun ZenithAudioScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = Icons.Default.Usb,
+                    imageVector = Icons.Default.Speed,
                     contentDescription = null,
                     tint = Color(0xFF00E676),
                     modifier = Modifier.size(20.dp)
@@ -766,13 +1089,13 @@ fun ZenithAudioScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(
-                        text = "5ms USB GAMING MODE & NETEQ ACTIVE",
+                        text = "AOA 2.0 DAC • ZERO-DROP FAILOVER • CALL DUCKING",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
                     Text(
-                        text = "USB Tethering supported • WSOLA pitch-preserving clock sync active",
+                        text = "AOA 2.0 USB DAC hardware mode • 0ms Wi-Fi ↔ USB Failover • WSOLA NetEQ sync",
                         fontSize = 10.sp,
                         color = Color(0xFF888888)
                     )

@@ -25,5 +25,8 @@ data class StreamMetrics(
     val packetsLost: Long = 0,
     val audioUnderruns: Int = 0,
     val isAutoBitrate: Boolean = false,
-    val volumePercent: Int = 100
+    val volumePercent: Int = 100,
+    val transportType: String = "Wi-Fi",
+    val isCallDuckingActive: Boolean = false,
+    val isAoaDacActive: Boolean = false
 )

@@ -38,6 +38,9 @@ class AudioReceiverService : Service() {
     private var receiver: UdpAudioReceiver? = null
     private var micRecorder: com.zenith.audio.mic.MicAudioRecorder? = null
     private lateinit var serverDiscovery: com.zenith.audio.network.ServerDiscovery
+    private var callDuckingManager: com.zenith.audio.telephony.CallDuckingManager? = null
+    private var failoverManager: com.zenith.audio.network.NetworkFailoverManager? = null
+    private var aoaDacManager: com.zenith.audio.usb.AoaDacManager? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
@@ -57,6 +60,30 @@ class AudioReceiverService : Service() {
         }
         serverDiscovery = com.zenith.audio.network.ServerDiscovery(this)
         serverDiscovery.startDiscovery()
+
+        callDuckingManager = com.zenith.audio.telephony.CallDuckingManager(
+            context = this,
+            onSetVolume = { duckVol ->
+                receiver?.setMasterVolume(duckVol)
+            },
+            onDuckingStateChanged = { isDucking ->
+                receiver?.setCallDuckingActive(isDucking)
+            }
+        ).apply { start() }
+
+        failoverManager = com.zenith.audio.network.NetworkFailoverManager(this) { newTransport, targetIp ->
+            receiver?.switchEndpoint(targetIp, transportName = newTransport)
+        }
+
+        aoaDacManager = com.zenith.audio.usb.AoaDacManager(this) { isUsb, targetIp ->
+            if (isUsb) {
+                receiver?.setAoaDacActive(true)
+                receiver?.switchEndpoint("127.0.0.1", transportName = "USB AOA 2.0 DAC")
+            } else {
+                receiver?.setAoaDacActive(false)
+                receiver?.switchEndpoint(targetIp.ifEmpty { "192.168.1.9" }, transportName = "Wi-Fi")
+            }
+        }.apply { start() }
 
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ZenithAudio::StreamWakeLock")
@@ -91,6 +118,12 @@ class AudioReceiverService : Service() {
     val isMicRecording: StateFlow<Boolean>? get() = micRecorder?.isRecording
     val micLevel: StateFlow<Float>? get() = micRecorder?.micLevel
 
+    val isCallDuckingEnabled: StateFlow<Boolean>? get() = callDuckingManager?.isDuckingEnabled
+    val isCallActive: StateFlow<Boolean>? get() = callDuckingManager?.isCallActive
+
+    val isAoaEnabled: StateFlow<Boolean>? get() = aoaDacManager?.isAoaEnabled
+    val isUsbConnected: StateFlow<Boolean>? get() = aoaDacManager?.isUsbConnected
+
     fun setBitrate(bitrateKbps: Int) {
         receiver?.setBitrate(bitrateKbps)
     }
@@ -100,7 +133,16 @@ class AudioReceiverService : Service() {
     }
 
     fun setMasterVolume(volumePercent: Int) {
+        callDuckingManager?.updateCurrentVolume(volumePercent)
         receiver?.setMasterVolume(volumePercent)
+    }
+
+    fun setCallDuckingEnabled(enabled: Boolean) {
+        callDuckingManager?.setAutoDuckingEnabled(enabled)
+    }
+
+    fun setAoaModeEnabled(enabled: Boolean, fallbackWifiIp: String) {
+        aoaDacManager?.setAoaModeEnabled(enabled, fallbackWifiIp)
     }
 
     fun toggleMic(enable: Boolean): Boolean {
@@ -114,6 +156,8 @@ class AudioReceiverService : Service() {
     }
 
     private fun startStreaming(ip: String, port: Int, bitrate: Int) {
+        failoverManager?.updateWifiServerIp(ip)
+        failoverManager?.start(ip)
         receiver?.start(ip, port, bitrate)
 
         metricsCollectorJob?.cancel()
@@ -146,6 +190,7 @@ class AudioReceiverService : Service() {
 
     private fun stopStreaming() {
         metricsCollectorJob?.cancel()
+        failoverManager?.stop()
         micRecorder?.stop()
         receiver?.stop()
     }
@@ -153,6 +198,9 @@ class AudioReceiverService : Service() {
     override fun onDestroy() {
         stopStreaming()
         serverDiscovery.stopDiscovery()
+        callDuckingManager?.stop()
+        failoverManager?.stop()
+        aoaDacManager?.stop()
         wakeLock?.let {
             if (it.isHeld) it.release()
         }

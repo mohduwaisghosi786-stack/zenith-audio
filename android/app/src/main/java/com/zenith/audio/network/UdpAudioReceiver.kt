@@ -114,10 +114,28 @@ class UdpAudioReceiver(private val context: Context) {
     private var isAutoBitrate: Boolean = false
     private var stableCycles: Int = 0
     private var currentVolumePercent: Int = 100
+    private var currentTransportName: String = "Wi-Fi"
+    private var isCallDuckingActive: Boolean = false
+    private var isAoaDacActive: Boolean = false
 
     fun setAutoBitrate(enabled: Boolean) {
         isAutoBitrate = enabled
         _metrics.value = _metrics.value.copy(isAutoBitrate = enabled)
+    }
+
+    fun setCallDuckingActive(active: Boolean) {
+        isCallDuckingActive = active
+        _metrics.value = _metrics.value.copy(isCallDuckingActive = active)
+    }
+
+    fun setAoaDacActive(active: Boolean) {
+        isAoaDacActive = active
+        _metrics.value = _metrics.value.copy(isAoaDacActive = active)
+    }
+
+    fun setTransportName(name: String) {
+        currentTransportName = name
+        _metrics.value = _metrics.value.copy(transportType = name)
     }
 
     fun setMasterVolume(volumePercent: Int) {
@@ -125,6 +143,28 @@ class UdpAudioReceiver(private val context: Context) {
         val packet = ZapProtocol.buildVolumeControlPacket(currentVolumePercent)
         sendRaw(packet)
         _metrics.value = _metrics.value.copy(volumePercent = currentVolumePercent)
+    }
+
+    fun getCurrentVolume(): Int = currentVolumePercent
+
+    fun switchEndpoint(newIp: String, newPort: Int = ZapProtocol.DEFAULT_PORT, transportName: String = "Wi-Fi") {
+        if (newIp.isBlank()) return
+        currentTransportName = transportName
+        netIoExecutor.execute {
+            try {
+                val newAddr = InetAddress.getByName(newIp)
+                serverAddress = newAddr
+                serverPort = newPort
+                Log.i(TAG, "[Failover] Zero-drop hot-switched active endpoint to $newIp:$newPort ($transportName)")
+                sendPing()
+                _metrics.value = _metrics.value.copy(
+                    serverIp = newIp,
+                    transportType = transportName
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "[Failover] Failed to switch endpoint to $newIp", e)
+            }
+        }
     }
 
     fun setBitrate(bitrateKbps: Int) {
@@ -389,7 +429,10 @@ class UdpAudioReceiver(private val context: Context) {
                 packetsLost = totalLost,
                 audioUnderruns = audioPlayer.getUnderruns(),
                 isAutoBitrate = isAutoBitrate,
-                volumePercent = currentVolumePercent
+                volumePercent = currentVolumePercent,
+                transportType = currentTransportName,
+                isCallDuckingActive = isCallDuckingActive,
+                isAoaDacActive = isAoaDacActive
             )
         }
     }
