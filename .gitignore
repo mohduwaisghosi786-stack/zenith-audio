@@ -1,0 +1,34 @@
+# Build & Object Files
+*.o
+*.a
+*.so
+server/bin/
+bin/
+test/test_client
+test/test_opus
+test/test_pw
+
+# Android Build & Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+.gradle/
+build/
+*.apk
+*.aab
+release_artifacts/
+
+# IDE & Editor
+.idea/
+*.iml
+.vscode/
+*.swp
+*~
+
+# Logs & Temporary files
+*.log
+scratch/
+test/build/
+test/bin/
+test/gradle-test/
