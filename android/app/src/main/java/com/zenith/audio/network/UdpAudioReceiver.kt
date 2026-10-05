@@ -79,10 +79,17 @@ class UdpAudioReceiver(private val context: Context) {
         isRunning.set(true)
         lastPacketTimeNs = System.nanoTime()
 
+        currentTransportName = if (serverIp.startsWith("10.") || serverIp.startsWith("192.168.42.") || serverIp == "127.0.0.1") {
+            "USB 0.5ms Direct"
+        } else {
+            "Wi-Fi"
+        }
+
         _metrics.value = StreamMetrics(
             connectionState = ConnectionState.CONNECTING,
             serverIp = serverIp,
-            bitrateKbps = initialBitrateKbps
+            bitrateKbps = initialBitrateKbps,
+            transportType = currentTransportName
         )
 
         rxThread = Thread({ rxLoop() }, "Zenith-UDP-Rx").apply { start() }

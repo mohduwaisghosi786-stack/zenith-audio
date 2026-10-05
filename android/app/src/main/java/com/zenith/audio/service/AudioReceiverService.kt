@@ -78,7 +78,7 @@ class AudioReceiverService : Service() {
         aoaDacManager = com.zenith.audio.usb.AoaDacManager(this) { isUsb, targetIp ->
             if (isUsb) {
                 receiver?.setAoaDacActive(true)
-                receiver?.switchEndpoint("127.0.0.1", transportName = "USB AOA 2.0 DAC")
+                receiver?.switchEndpoint(targetIp.ifEmpty { "10.81.101.129" }, transportName = "USB AOA 2.0 DAC")
             } else {
                 receiver?.setAoaDacActive(false)
                 receiver?.switchEndpoint(targetIp.ifEmpty { "192.168.1.9" }, transportName = "Wi-Fi")

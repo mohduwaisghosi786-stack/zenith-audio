@@ -50,9 +50,10 @@ class NetworkFailoverManager(
 
                 // Automatic Seamless Failover logic:
                 if (hasUsbEthernet && activeTransport != "USB") {
-                    Log.i(TAG, "High-speed USB network detected -> Hot-switching to USB 5ms tunnel")
+                    val usbIp = com.zenith.audio.usb.UsbIpResolver.resolveUsbHostIp()
+                    Log.i(TAG, "High-speed USB network detected -> Hot-switching to USB 0.5ms tunnel ($usbIp)")
                     activeTransport = "USB"
-                    onFailoverTriggered("USB", "127.0.0.1")
+                    onFailoverTriggered("USB 0.5ms Direct", usbIp)
                 } else if (!hasUsbEthernet && hasWifi && activeTransport != "Wi-Fi") {
                     Log.i(TAG, "USB disconnected -> Zero-drop hot-failover back to Wi-Fi ($cachedWifiIp)")
                     activeTransport = "Wi-Fi"

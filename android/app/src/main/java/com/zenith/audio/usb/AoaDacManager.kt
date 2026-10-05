@@ -12,13 +12,52 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+object UsbIpResolver {
+    fun resolveUsbHostIp(): String {
+        try {
+            val file = java.io.File("/proc/net/arp")
+            if (file.exists()) {
+                for (line in file.readLines()) {
+                    val tokens = line.trim().split(Regex("\\s+"))
+                    if (tokens.size >= 6) {
+                        val ip = tokens[0]
+                        val flags = tokens[2]
+                        val iface = tokens[5]
+                        if (flags == "0x2" && (iface.startsWith("rndis") || iface.startsWith("usb") || iface.startsWith("eth"))) {
+                            if (ip.isNotBlank() && ip != "0.0.0.0") return ip
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            for (intf in interfaces) {
+                if (intf.name.startsWith("rndis") || intf.name.startsWith("usb") || intf.name.startsWith("eth")) {
+                    for (addr in intf.inetAddresses) {
+                        if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                            val host = addr.hostAddress ?: continue
+                            val lastDot = host.lastIndexOf('.')
+                            if (lastDot > 0) {
+                                return host.substring(0, lastDot + 1) + "129"
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        return "10.81.101.129"
+    }
+}
+
 class AoaDacManager(
     private val context: Context,
     private val onSwitchTransport: (isUsb: Boolean, targetIp: String) -> Unit
 ) {
     companion object {
         private const val TAG = "AoaDacManager"
-        const val USB_LOCAL_IP = "127.0.0.1"
     }
 
     private val _isAoaEnabled = MutableStateFlow(false)
@@ -42,7 +81,8 @@ class AoaDacManager(
                     Log.i(TAG, "USB Accessory Attached: ${accessory?.description}")
                     _isUsbConnected.value = true
                     if (_isAoaEnabled.value) {
-                        onSwitchTransport(true, USB_LOCAL_IP)
+                        val usbIp = UsbIpResolver.resolveUsbHostIp()
+                        onSwitchTransport(true, usbIp)
                     }
                 }
                 UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
@@ -80,10 +120,11 @@ class AoaDacManager(
         Log.i(TAG, "AOA 2.0 Hardware USB DAC mode toggled: $enabled")
 
         if (enabled) {
-            // Switch to direct USB zero-latency endpoint
-            onSwitchTransport(true, USB_LOCAL_IP)
+            val usbIp = UsbIpResolver.resolveUsbHostIp()
+            Log.i(TAG, "AOA USB DAC enabled -> Routing to USB host $usbIp")
+            onSwitchTransport(true, usbIp)
         } else {
-            // Switch back to Wi-Fi
+            Log.i(TAG, "AOA USB DAC disabled -> Restoring Wi-Fi to $fallbackWifiIp")
             onSwitchTransport(false, fallbackWifiIp)
         }
     }
