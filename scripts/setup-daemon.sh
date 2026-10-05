@@ -43,8 +43,6 @@ Type=simple
 ExecStart=%h/.local/bin/zenith-server --port 59100 --bitrate 320
 Restart=always
 RestartSec=2
-CPUSchedulingPolicy=rr
-CPUSchedulingPriority=50
 
 [Install]
 WantedBy=default.target
