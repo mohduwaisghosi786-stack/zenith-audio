@@ -4,6 +4,7 @@ LDFLAGS ?= $(shell pkg-config --libs libpipewire-0.3 opus) -pthread
 
 SRCS = src/main.cpp \
        src/pipewire_capture.cpp \
+       src/pipewire_mic.cpp \
        src/opus_encoder.cpp \
        src/network_server.cpp \
        src/audio_engine.cpp

@@ -12,7 +12,9 @@ import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -33,12 +35,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.zenith.audio.model.ConnectionState
 import com.zenith.audio.model.StreamMetrics
+import com.zenith.audio.protocol.ZapProtocol
 import com.zenith.audio.service.AudioReceiverService
 import kotlinx.coroutines.flow.collectLatest
-
-import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -46,17 +48,43 @@ class MainActivity : ComponentActivity() {
     private var audioService: AudioReceiverService? = null
     private var isBound = false
     private val metricsState = mutableStateOf(StreamMetrics())
+    private val discoveredServersState = mutableStateOf<List<ZapProtocol.DiscoveredServer>>(emptyList())
+    private val isMicRecordingState = mutableStateOf(false)
+    private val micLevelState = mutableStateOf(0f)
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val localBinder = binder as? AudioReceiverService.LocalBinder
-            audioService = localBinder?.getService()
+            val service = localBinder?.getService() ?: return
+            audioService = service
             isBound = true
 
-            audioService?.getMetricsFlow()?.let { flow ->
+            service.getMetricsFlow()?.let { flow ->
                 lifecycleScope.launch {
                     flow.collectLatest { metrics ->
                         metricsState.value = metrics
+                    }
+                }
+            }
+
+            lifecycleScope.launch {
+                service.discoveredServers.collectLatest { servers ->
+                    discoveredServersState.value = servers
+                }
+            }
+
+            service.isMicRecording?.let { flow ->
+                lifecycleScope.launch {
+                    flow.collectLatest { recording ->
+                        isMicRecordingState.value = recording
+                    }
+                }
+            }
+
+            service.micLevel?.let { flow ->
+                lifecycleScope.launch {
+                    flow.collectLatest { level ->
+                        micLevelState.value = level
                     }
                 }
             }
@@ -96,6 +124,9 @@ class MainActivity : ComponentActivity() {
                     ZenithAudioScreen(
                         initialIp = initialIp,
                         metrics = metricsState.value,
+                        discoveredServers = discoveredServersState.value,
+                        isMicRecording = isMicRecordingState.value,
+                        micLevel = micLevelState.value,
                         onConnect = { ip, bitrate ->
                             prefs.edit().putString("server_ip", ip).apply()
                             startStreamingService(ip, bitrate)
@@ -105,6 +136,21 @@ class MainActivity : ComponentActivity() {
                         },
                         onBitrateChange = { bitrate ->
                             audioService?.setBitrate(bitrate)
+                        },
+                        onToggleAutoBitrate = { enabled ->
+                            audioService?.setAutoBitrate(enabled)
+                        },
+                        onVolumeChange = { volumePercent ->
+                            audioService?.setMasterVolume(volumePercent)
+                        },
+                        onToggleMic = { enable ->
+                            if (enable && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                                != PackageManager.PERMISSION_GRANTED
+                            ) {
+                                requestRequiredPermissions()
+                            } else {
+                                audioService?.toggleMic(enable)
+                            }
                         }
                     )
                 }
@@ -162,6 +208,12 @@ class MainActivity : ComponentActivity() {
                 permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
             }
         }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissions.add(Manifest.permission.RECORD_AUDIO)
+        }
+
         if (permissions.isNotEmpty()) {
             requestPermissionsLauncher.launch(permissions.toTypedArray())
         }
@@ -172,12 +224,21 @@ class MainActivity : ComponentActivity() {
 fun ZenithAudioScreen(
     initialIp: String,
     metrics: StreamMetrics,
+    discoveredServers: List<ZapProtocol.DiscoveredServer>,
+    isMicRecording: Boolean,
+    micLevel: Float,
     onConnect: (String, Int) -> Unit,
     onDisconnect: () -> Unit,
-    onBitrateChange: (Int) -> Unit
+    onBitrateChange: (Int) -> Unit,
+    onToggleAutoBitrate: (Boolean) -> Unit,
+    onVolumeChange: (Int) -> Unit,
+    onToggleMic: (Boolean) -> Unit
 ) {
     var serverIp by remember { mutableStateOf(initialIp) }
     var selectedBitrate by remember { mutableIntStateOf(320) }
+    var isAutoBitrate by remember { mutableStateOf(false) }
+    var volumeSlider by remember { mutableFloatStateOf(100f) }
+
     val bitrates = listOf(320, 256, 192, 128, 96, 64)
 
     val isConnected = metrics.connectionState == ConnectionState.CONNECTED
@@ -187,13 +248,15 @@ fun ZenithAudioScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(20.dp)
+            .padding(18.dp)
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // App Header
         Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 24.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp, bottom = 18.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -206,13 +269,90 @@ fun ZenithAudioScreen(
                     letterSpacing = 2.sp
                 )
                 Text(
-                    text = "Ultra-Low-Latency Stream",
-                    fontSize = 13.sp,
+                    text = "Linux → Android Ultra-Low-Latency",
+                    fontSize = 12.sp,
                     color = Color(0xFFAAAAAA)
                 )
             }
 
             StatusBadge(state = metrics.connectionState)
+        }
+
+        // LAN Auto-Discovery Section
+        AnimatedVisibility(
+            visible = !isConnected && discoveredServers.isNotEmpty(),
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                Text(
+                    text = "DISCOVERED LINUX SERVERS (LAN)",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF00E676),
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+
+                discoveredServers.forEach { srv ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .clickable {
+                                serverIp = srv.ip
+                                onConnect(srv.ip, selectedBitrate)
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1B2A1E))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Computer,
+                                    contentDescription = null,
+                                    tint = Color(0xFF00E676),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = srv.serverName,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                    Text(
+                                        text = "${srv.ip}:${srv.port} • ${srv.bitrateKbps} kbps",
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF888888)
+                                    )
+                                }
+                            }
+
+                            Button(
+                                onClick = {
+                                    serverIp = srv.ip
+                                    onConnect(srv.ip, selectedBitrate)
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF00E676),
+                                    contentColor = Color.Black
+                                ),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text("Connect", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Server IP Input Field
@@ -231,26 +371,77 @@ fun ZenithAudioScreen(
             )
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        // Quality Bitrate Selector
-        Text(
-            text = "AUDIO QUALITY (BITRATE)",
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = Color(0xFF888888),
-            modifier = Modifier.fillMaxWidth()
-        )
+        // Quality Bitrate Selector with AUTO mode
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "AUDIO QUALITY (BITRATE)",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFF888888)
+            )
+
+            if (isAutoBitrate) {
+                Text(
+                    text = "AUTO-PILOT ACTIVE (${metrics.bitrateKbps}k)",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF00E676)
+                )
+            }
+        }
         Spacer(modifier = Modifier.height(8.dp))
+
         LazyRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // AUTO Mode Chip
+            item {
+                FilterChip(
+                    selected = isAutoBitrate,
+                    onClick = {
+                        isAutoBitrate = !isAutoBitrate
+                        onToggleAutoBitrate(isAutoBitrate)
+                        if (!isAutoBitrate) {
+                            onBitrateChange(selectedBitrate)
+                        }
+                    },
+                    label = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Speed,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "AUTO",
+                                fontSize = 12.sp,
+                                fontWeight = if (isAutoBitrate) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFF00E676),
+                        selectedLabelColor = Color.Black
+                    )
+                )
+            }
+
+            // Fixed bitrates
             items(bitrates) { br ->
-                val isSelected = (br == selectedBitrate)
+                val isSelected = !isAutoBitrate && (br == selectedBitrate)
                 FilterChip(
                     selected = isSelected,
                     onClick = {
+                        isAutoBitrate = false
+                        onToggleAutoBitrate(false)
                         selectedBitrate = br
                         if (isConnected) onBitrateChange(br)
                     },
@@ -269,7 +460,7 @@ fun ZenithAudioScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(18.dp))
 
         // Main Connect / Disconnect Action Button
         Button(
@@ -282,8 +473,8 @@ fun ZenithAudioScreen(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(16.dp),
+                .height(54.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = if (isConnected || isConnecting) Color(0xFFFF5252) else Color(0xFF00E676),
                 contentColor = if (isConnected || isConnecting) Color.White else Color.Black
@@ -292,32 +483,167 @@ fun ZenithAudioScreen(
             Icon(
                 imageVector = if (isConnected || isConnecting) Icons.Default.Close else Icons.Default.PlayArrow,
                 contentDescription = null,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(22.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = when {
-                    isConnected -> "DISCONNECT"
+                    isConnected -> "DISCONNECT STREAM"
                     isConnecting -> "CANCEL CONNECTING"
                     else -> "CONNECT TO SERVER"
                 },
-                fontSize = 16.sp,
+                fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.sp
             )
         }
 
-        Spacer(modifier = Modifier.height(28.dp))
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // 🎙️ DEDICATED REVERSE WIRELESS MICROPHONE CARD (On-Demand Section)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isMicRecording) Color(0xFF1C2D1F) else Color(0xFF1E1E1E)
+            )
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (isMicRecording) Icons.Default.Mic else Icons.Default.MicOff,
+                            contentDescription = null,
+                            tint = if (isMicRecording) Color(0xFF00E676) else Color(0xFF888888),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "WIRELESS MICROPHONE",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = if (isMicRecording) "Streaming to PC ('Zenith Wireless Microphone')" else "Routes phone mic to Linux PC for Discord/Zoom",
+                                fontSize = 11.sp,
+                                color = if (isMicRecording) Color(0xFF00E676) else Color(0xFF888888)
+                            )
+                        }
+                    }
+
+                    // Independent Mic Toggle Button
+                    Button(
+                        onClick = {
+                            onToggleMic(!isMicRecording)
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isMicRecording) Color(0xFFFF5252) else Color(0xFF2E7D32),
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = if (isMicRecording) "TURN OFF" else "TURN ON",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                // Live Mic Input Level VU Meter
+                if (isMicRecording) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("MIC LEVEL", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF888888))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        LinearProgressIndicator(
+                            progress = micLevel.coerceIn(0f, 1f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp),
+                            color = Color(0xFF00E676),
+                            trackColor = Color(0xFF333333)
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 🎚️ HARDWARE VOLUME SYNC CARD
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (volumeSlider > 0) Icons.Default.VolumeUp else Icons.Default.VolumeMute,
+                            contentDescription = null,
+                            tint = Color(0xFF00E676),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "LINUX MASTER VOLUME SYNC",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                    Text(
+                        text = "${volumeSlider.toInt()}%",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color(0xFF00E676)
+                    )
+                }
+
+                Slider(
+                    value = volumeSlider,
+                    onValueChange = {
+                        volumeSlider = it
+                        onVolumeChange(it.toInt())
+                    },
+                    valueRange = 0f..100f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFF00E676),
+                        activeTrackColor = Color(0xFF00E676),
+                        inactiveTrackColor = Color(0xFF333333)
+                    )
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
 
         // Real-Time Diagnostic Dashboard
         Text(
             text = "LIVE TELEMETRY & DIAGNOSTICS",
-            fontSize = 12.sp,
+            fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
             color = Color(0xFF888888),
             modifier = Modifier.fillMaxWidth()
         )
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         // Hardware Output Banner
         Card(
@@ -326,14 +652,14 @@ fun ZenithAudioScreen(
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
         ) {
             Row(
-                modifier = Modifier.padding(14.dp),
+                modifier = Modifier.padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
                     imageVector = if (metrics.isBluetooth) Icons.Default.Bluetooth else Icons.Default.VolumeUp,
                     contentDescription = null,
                     tint = if (metrics.isBluetooth) Color(0xFF448AFF) else Color(0xFF00E676),
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier.size(26.dp)
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
@@ -345,7 +671,7 @@ fun ZenithAudioScreen(
                     )
                     Text(
                         text = metrics.outputDeviceName,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Color.White
                     )
@@ -353,7 +679,7 @@ fun ZenithAudioScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         // Telemetry Grid
         Row(modifier = Modifier.fillMaxWidth()) {
@@ -369,7 +695,7 @@ fun ZenithAudioScreen(
                 highlight = true,
                 modifier = Modifier.weight(1f)
             )
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(10.dp))
             MetricCard(
                 title = "PACKET LOSS",
                 value = if (isConnected) "%.2f%%".format(metrics.packetLossPercent) else "0.00%",
@@ -379,7 +705,7 @@ fun ZenithAudioScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         Row(modifier = Modifier.fillMaxWidth()) {
             MetricCard(
@@ -389,27 +715,27 @@ fun ZenithAudioScreen(
                 icon = Icons.Default.Timeline,
                 modifier = Modifier.weight(1f)
             )
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(10.dp))
             MetricCard(
                 title = "STREAM FORMAT",
                 value = if (isConnected) "${metrics.bitrateKbps} kbps" else "320 kbps",
-                subtitle = "48 kHz | Stereo | Opus",
+                subtitle = "48 kHz | Stereo | Opus Low-Delay",
                 icon = Icons.Default.GraphicEq,
                 modifier = Modifier.weight(1f)
             )
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         Row(modifier = Modifier.fillMaxWidth()) {
             MetricCard(
                 title = "ROUND TRIP (RTT)",
                 value = if (isConnected) "%.1f ms".format(metrics.networkRttMs) else "--",
-                subtitle = "UDP Ping/Pong",
+                subtitle = "UDP Ping/Pong Heartbeat",
                 icon = Icons.Default.NetworkCheck,
                 modifier = Modifier.weight(1f)
             )
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(10.dp))
             MetricCard(
                 title = "UNDERRUN COUNT",
                 value = "${metrics.audioUnderruns}",
@@ -417,6 +743,41 @@ fun ZenithAudioScreen(
                 icon = Icons.Default.Warning,
                 modifier = Modifier.weight(1f)
             )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // USB Gaming Mode & NetEQ Clock Sync Footer
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF181818))
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Usb,
+                    contentDescription = null,
+                    tint = Color(0xFF00E676),
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = "5ms USB GAMING MODE & NETEQ ACTIVE",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "USB Tethering supported • WSOLA pitch-preserving clock sync active",
+                        fontSize = 10.sp,
+                        color = Color(0xFF888888)
+                    )
+                }
+            }
         }
     }
 }

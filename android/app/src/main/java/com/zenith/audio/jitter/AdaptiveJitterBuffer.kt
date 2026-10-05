@@ -186,6 +186,12 @@ class AdaptiveJitterBuffer(
         }
     }
 
+    fun getTargetBufferDelayMs(): Double {
+        synchronized(lock) {
+            return targetDelayMs
+        }
+    }
+
     fun getPacketsReceived(): Long = packetsReceivedCount.get()
     fun getPacketsLost(): Long = packetsLostCount.get()
     fun getNextExpectedSeq(): Long = nextExpectedSeq

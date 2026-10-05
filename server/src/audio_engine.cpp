@@ -1,4 +1,5 @@
 #include "audio_engine.hpp"
+#include "pipewire_mic.hpp"
 #include "../../protocol/protocol.hpp"
 #include <iostream>
 #include <chrono>
@@ -67,6 +68,16 @@ bool AudioEngine::start(uint16_t port, int initial_bitrate_bps) {
     worker_thread_ = std::thread(&AudioEngine::audio_worker_thread, this);
     stats_thread_ = std::thread(&AudioEngine::stats_worker_thread, this);
 
+    // Initialize PipeWire virtual microphone sink (Phone mic -> Linux PC)
+    mic_sink_ = std::make_unique<PipeWireMicSink>();
+    if (mic_sink_->start()) {
+        transport_->set_mic_frame_callback([this](const uint8_t *data, size_t size, bool is_pcm) {
+            if (mic_sink_) {
+                mic_sink_->push_audio_frame(data, size, is_pcm);
+            }
+        });
+    }
+
     std::cout << "[Engine] Zenith Audio Engine started successfully at "
               << (initial_bitrate_bps / 1000) << " kbps\n";
     return true;
@@ -76,6 +87,11 @@ void AudioEngine::stop() {
     if (!is_running_.load()) return;
 
     is_running_.store(false);
+
+    if (mic_sink_) {
+        mic_sink_->stop();
+        mic_sink_.reset();
+    }
 
     if (source_) {
         source_->stop();

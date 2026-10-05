@@ -32,8 +32,8 @@ static const struct pw_stream_events stream_events = {
     .trigger_done = nullptr,
 };
 
-PipeWireCapture::PipeWireCapture(const AudioFormat &format)
-    : format_(format) {
+PipeWireCapture::PipeWireCapture(const AudioFormat &format, const std::string &target_app)
+    : format_(format), target_app_(target_app) {
 }
 
 PipeWireCapture::~PipeWireCapture() {
@@ -78,7 +78,7 @@ void PipeWireCapture::thread_main() {
         return;
     }
 
-    // Capture monitor of default audio output sink
+    // Capture monitor of default audio output sink or specific application
     struct pw_properties *props = pw_properties_new(
         PW_KEY_MEDIA_TYPE, "Audio",
         PW_KEY_MEDIA_CATEGORY, "Capture",
@@ -86,9 +86,16 @@ void PipeWireCapture::thread_main() {
         PW_KEY_APP_NAME, "ZenithAudioServer",
         PW_KEY_NODE_LATENCY, "480/48000",
         PW_KEY_NODE_RATE, "1/48000",
-        "stream.capture.sink", "true",
-        NULL
+        nullptr
     );
+
+    if (!target_app_.empty()) {
+        pw_properties_set(props, PW_KEY_TARGET_OBJECT, target_app_.c_str());
+        std::cout << "[PipeWire] Capturing target application node: " << target_app_ << "\n";
+    } else {
+        pw_properties_set(props, "stream.capture.sink", "true");
+        std::cout << "[PipeWire] Capturing entire Linux system mixed audio output.\n";
+    }
 
     stream_ = pw_stream_new_simple(
         pw_main_loop_get_loop(loop_),

@@ -23,5 +23,7 @@ data class StreamMetrics(
     val packetLossPercent: Double = 0.0,
     val packetsReceived: Long = 0,
     val packetsLost: Long = 0,
-    val audioUnderruns: Int = 0
+    val audioUnderruns: Int = 0,
+    val isAutoBitrate: Boolean = false,
+    val volumePercent: Int = 100
 )

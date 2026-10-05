@@ -35,6 +35,7 @@ public:
 
     void set_feedback_callback(FeedbackCallback cb) override { feedback_cb_ = std::move(cb); }
     void set_control_callback(ControlCallback cb) override { control_cb_ = std::move(cb); }
+    void set_mic_frame_callback(MicFrameCallback cb) override { mic_cb_ = std::move(cb); }
 
     TransportStats get_stats() const override;
     bool is_running() const override { return is_running_.load(); }
@@ -44,6 +45,8 @@ private:
     void handle_incoming_packet(const uint8_t *buffer, size_t size, const struct sockaddr_in &src_addr);
     void update_or_add_client(const struct sockaddr_in &addr);
     void cleanup_stale_clients();
+    void send_discovery_beacon(const struct sockaddr_in &dest_addr);
+    void broadcast_discovery_beacon();
 
     int sockfd_ = -1;
     uint16_t port_ = zap::DEFAULT_PORT;
@@ -56,6 +59,7 @@ private:
 
     FeedbackCallback feedback_cb_;
     ControlCallback control_cb_;
+    MicFrameCallback mic_cb_;
 
     std::mutex clients_mutex_;
     std::vector<ClientEndpoint> clients_;

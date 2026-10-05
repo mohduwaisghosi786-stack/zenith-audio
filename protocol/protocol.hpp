@@ -20,12 +20,15 @@ constexpr uint8_t  VERSION = 1;
 constexpr uint16_t DEFAULT_PORT = 59100;
 
 enum PacketType : uint8_t {
-    PKT_AUDIO_FRAME     = 0x01,
-    PKT_PING            = 0x02,
-    PKT_PONG            = 0x03,
-    PKT_CLIENT_FEEDBACK = 0x04,
-    PKT_SERVER_ANNOUNCE = 0x05,
-    PKT_CONTROL_REQ     = 0x06
+    PKT_AUDIO_FRAME      = 0x01,
+    PKT_PING             = 0x02,
+    PKT_PONG             = 0x03,
+    PKT_CLIENT_FEEDBACK  = 0x04,
+    PKT_SERVER_ANNOUNCE  = 0x05,
+    PKT_CONTROL_REQ      = 0x06,
+    PKT_DISCOVERY_BEACON = 0x07,
+    PKT_DISCOVERY_PROBE  = 0x08,
+    PKT_MIC_AUDIO_FRAME  = 0x09
 };
 
 enum CodecType : uint8_t {
@@ -36,14 +39,17 @@ enum CodecType : uint8_t {
 enum PacketFlags : uint16_t {
     FLAG_NONE          = 0x0000,
     FLAG_FEC_PRESENT   = 0x0001,
-    FLAG_DISCONTINUITY = 0x0002
+    FLAG_DISCONTINUITY = 0x0002,
+    FLAG_MIC_PCM       = 0x0004
 };
 
 enum ControlCmd : uint8_t {
     CMD_SET_BITRATE = 0x01,
     CMD_RESYNC      = 0x02,
     CMD_PAUSE       = 0x03,
-    CMD_RESUME      = 0x04
+    CMD_RESUME      = 0x04,
+    CMD_SET_VOLUME  = 0x05,
+    CMD_MIC_STATE   = 0x06
 };
 
 #pragma pack(push, 1)
@@ -158,6 +164,31 @@ struct ControlPayload {
     }
 };
 
+struct DiscoveryPayload {
+    char     server_name[32]; // Null-terminated hostname
+    uint16_t port;            // 59100
+    uint16_t version;         // 1
+    uint32_t sample_rate;     // 48000
+    uint16_t channels;        // 2
+    uint16_t current_bitrate_kbps; // 320
+
+    void to_network() {
+        port = htons(port);
+        version = htons(version);
+        sample_rate = htonl(sample_rate);
+        channels = htons(channels);
+        current_bitrate_kbps = htons(current_bitrate_kbps);
+    }
+
+    void to_host() {
+        port = ntohs(port);
+        version = ntohs(version);
+        sample_rate = ntohl(sample_rate);
+        channels = ntohs(channels);
+        current_bitrate_kbps = ntohs(current_bitrate_kbps);
+    }
+};
+
 #pragma pack(pop)
 
 static_assert(sizeof(Header) == 20, "Header must be exactly 20 bytes");
@@ -165,5 +196,6 @@ static_assert(sizeof(PingPayload) == 16, "PingPayload must be 16 bytes");
 static_assert(sizeof(FeedbackPayload) == 20, "FeedbackPayload must be 20 bytes");
 static_assert(sizeof(AnnouncePayload) == 20, "AnnouncePayload must be 20 bytes");
 static_assert(sizeof(ControlPayload) == 8, "ControlPayload must be 8 bytes");
+static_assert(sizeof(DiscoveryPayload) == 44, "DiscoveryPayload must be 44 bytes");
 
 } // namespace zap

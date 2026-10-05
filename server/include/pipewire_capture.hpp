@@ -10,7 +10,7 @@ namespace zenith {
 
 class PipeWireCapture : public IAudioSource {
 public:
-    PipeWireCapture(const AudioFormat &format = {48000, 2, 480});
+    PipeWireCapture(const AudioFormat &format = {48000, 2, 480}, const std::string &target_app = "");
     ~PipeWireCapture() override;
 
     bool start(AudioSampleCallback callback) override;
@@ -27,6 +27,7 @@ private:
     void thread_main();
 
     AudioFormat format_;
+    std::string target_app_;
     AudioSampleCallback callback_;
 
     struct pw_main_loop *loop_ = nullptr;

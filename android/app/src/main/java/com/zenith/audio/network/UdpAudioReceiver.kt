@@ -111,11 +111,28 @@ class UdpAudioReceiver(private val context: Context) {
         )
     }
 
+    private var isAutoBitrate: Boolean = false
+    private var stableCycles: Int = 0
+    private var currentVolumePercent: Int = 100
+
+    fun setAutoBitrate(enabled: Boolean) {
+        isAutoBitrate = enabled
+        _metrics.value = _metrics.value.copy(isAutoBitrate = enabled)
+    }
+
+    fun setMasterVolume(volumePercent: Int) {
+        currentVolumePercent = volumePercent.coerceIn(0, 100)
+        val packet = ZapProtocol.buildVolumeControlPacket(currentVolumePercent)
+        sendRaw(packet)
+        _metrics.value = _metrics.value.copy(volumePercent = currentVolumePercent)
+    }
+
     fun setBitrate(bitrateKbps: Int) {
         currentBitrateKbps = bitrateKbps
         val targetBps = bitrateKbps * 1000L
         val packet = ZapProtocol.buildControlPacket(ZapProtocol.CMD_SET_BITRATE, targetBps)
         sendRaw(packet)
+        _metrics.value = _metrics.value.copy(bitrateKbps = bitrateKbps)
     }
 
     private fun sendPing() {
@@ -143,7 +160,7 @@ class UdpAudioReceiver(private val context: Context) {
         sendRaw(fbBytes)
     }
 
-    private fun sendRaw(data: ByteArray) {
+    fun sendRaw(data: ByteArray) {
         val s = socket ?: return
         val addr = serverAddress ?: return
         netIoExecutor.execute {
@@ -242,6 +259,17 @@ class UdpAudioReceiver(private val context: Context) {
                         audioPlayer.write(pcmBuffer, pcmSize)
                     }
                     jitterBuffer.recyclePacket(pkt)
+
+                    // NetEQ WSOLA Clock Sync: micro pitch-preserving time stretching (±2%)
+                    val curDelay = jitterBuffer.getCurrentBufferDelayMs()
+                    val targetDelay = jitterBuffer.getTargetBufferDelayMs()
+                    if (curDelay > targetDelay + 15.0) {
+                        audioPlayer.setPlaybackSpeed(1.02f)
+                    } else if (curDelay < targetDelay - 8.0) {
+                        audioPlayer.setPlaybackSpeed(0.98f)
+                    } else {
+                        audioPlayer.setPlaybackSpeed(1.00f)
+                    }
                 }
 
                 is AdaptiveJitterBuffer.PopResult.LostPacket -> {
@@ -305,6 +333,42 @@ class UdpAudioReceiver(private val context: Context) {
                 (totalLost.toDouble() / (totalRcv + totalLost).toDouble()) * 100.0
             } else 0.0
 
+            // Dynamic Congestion Control (Smart Auto-Pilot Bitrate)
+            if (isAutoBitrate && connectionState == ConnectionState.CONNECTED) {
+                if (lossPct > 1.2 || rtt > 50.0) {
+                    val nextBitrate = when (currentBitrateKbps) {
+                        320 -> 256
+                        256 -> 192
+                        192 -> 128
+                        128 -> 64
+                        else -> 64
+                    }
+                    if (nextBitrate != currentBitrateKbps) {
+                        setBitrate(nextBitrate)
+                        stableCycles = 0
+                        Log.i(TAG, "[AutoBitrate] Congestion detected (loss=${lossPct}%, rtt=${rtt}ms) -> Stepped down to ${nextBitrate}k")
+                    }
+                } else if (lossPct < 0.2 && rtt < 25.0) {
+                    stableCycles++
+                    if (stableCycles >= 4) { // Clean channel for 2 seconds
+                        val nextBitrate = when (currentBitrateKbps) {
+                            64 -> 128
+                            128 -> 192
+                            192 -> 256
+                            256 -> 320
+                            else -> 320
+                        }
+                        if (nextBitrate != currentBitrateKbps) {
+                            setBitrate(nextBitrate)
+                            stableCycles = 0
+                            Log.i(TAG, "[AutoBitrate] Link clean -> Stepped up to ${nextBitrate}k")
+                        }
+                    }
+                } else {
+                    stableCycles = 0
+                }
+            }
+
             val (devName, isBt) = audioPlayer.getOutputDeviceInfo()
 
             _metrics.value = StreamMetrics(
@@ -323,7 +387,9 @@ class UdpAudioReceiver(private val context: Context) {
                 packetLossPercent = lossPct,
                 packetsReceived = totalRcv,
                 packetsLost = totalLost,
-                audioUnderruns = audioPlayer.getUnderruns()
+                audioUnderruns = audioPlayer.getUnderruns(),
+                isAutoBitrate = isAutoBitrate,
+                volumePercent = currentVolumePercent
             )
         }
     }

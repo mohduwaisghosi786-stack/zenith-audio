@@ -9,6 +9,8 @@
 
 namespace zenith {
 
+class PipeWireMicSink;
+
 class AudioEngine {
 public:
     AudioEngine(std::unique_ptr<IAudioSource> source,
@@ -32,6 +34,7 @@ private:
     std::unique_ptr<IAudioSource> source_;
     std::unique_ptr<IAudioEncoder> encoder_;
     std::unique_ptr<IAudioTransport> transport_;
+    std::unique_ptr<PipeWireMicSink> mic_sink_;
 
     // Ring buffer holding 16384 float samples (~170ms maximum, normal occupancy < 10ms)
     static constexpr size_t RING_BUFFER_CAPACITY = 16384;

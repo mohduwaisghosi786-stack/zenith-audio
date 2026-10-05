@@ -14,6 +14,9 @@ object ZapProtocol {
     const val PKT_CLIENT_FEEDBACK: Byte = 0x04
     const val PKT_SERVER_ANNOUNCE: Byte = 0x05
     const val PKT_CONTROL_REQ: Byte = 0x06
+    const val PKT_DISCOVERY_BEACON: Byte = 0x07
+    const val PKT_DISCOVERY_PROBE: Byte = 0x08
+    const val PKT_MIC_AUDIO_FRAME: Byte = 0x09
 
     const val CODEC_PCM16: Byte = 0x00
     const val CODEC_OPUS: Byte = 0x01
@@ -21,11 +24,14 @@ object ZapProtocol {
     const val FLAG_NONE: Short = 0x0000
     const val FLAG_FEC_PRESENT: Short = 0x0001
     const val FLAG_DISCONTINUITY: Short = 0x0002
+    const val FLAG_MIC_PCM: Short = 0x0004
 
     const val CMD_SET_BITRATE: Byte = 0x01
     const val CMD_RESYNC: Byte = 0x02
     const val CMD_PAUSE: Byte = 0x03
     const val CMD_RESUME: Byte = 0x04
+    const val CMD_SET_VOLUME: Byte = 0x05
+    const val CMD_MIC_STATE: Byte = 0x06
 
     const val HEADER_SIZE = 20
 
@@ -110,6 +116,48 @@ object ZapProtocol {
         return buf.array()
     }
 
+    data class DiscoveredServer(
+        val ip: String,
+        val port: Int,
+        val serverName: String,
+        val bitrateKbps: Int
+    )
+
+    fun buildDiscoveryProbePacket(): ByteArray {
+        val buf = ByteBuffer.allocate(HEADER_SIZE).order(ByteOrder.BIG_ENDIAN)
+        buf.putShort(MAGIC)
+        buf.put(VERSION)
+        buf.put(PKT_DISCOVERY_PROBE)
+        buf.putInt(0)
+        buf.putLong(System.nanoTime() / 1000L)
+        buf.putShort(0)
+        buf.putShort(FLAG_NONE)
+        return buf.array()
+    }
+
+    fun parseDiscoveryBeacon(buffer: ByteBuffer, ipAddress: String): DiscoveredServer? {
+        if (buffer.remaining() < 32 + 2 + 2 + 4 + 2 + 2) return null
+        buffer.order(ByteOrder.BIG_ENDIAN)
+
+        val nameBytes = ByteArray(32)
+        buffer.get(nameBytes)
+        val nameEnd = nameBytes.indexOf(0).let { if (it >= 0) it else 32 }
+        val serverName = String(nameBytes, 0, nameEnd, Charsets.UTF_8).trim().ifEmpty { "Linux Audio Server" }
+
+        val port = buffer.short.toInt() and 0xFFFF
+        buffer.short // version
+        buffer.int   // sample rate
+        buffer.short // channels
+        val bitrateKbps = buffer.short.toInt() and 0xFFFF
+
+        return DiscoveredServer(
+            ip = ipAddress,
+            port = if (port > 0) port else DEFAULT_PORT,
+            serverName = serverName,
+            bitrateKbps = if (bitrateKbps > 0) bitrateKbps else 320
+        )
+    }
+
     fun buildControlPacket(command: Byte, targetBitrate: Long): ByteArray {
         val buf = ByteBuffer.allocate(HEADER_SIZE + 8).order(ByteOrder.BIG_ENDIAN)
         buf.putShort(MAGIC)
@@ -124,6 +172,53 @@ object ZapProtocol {
         buf.put(0.toByte())
         buf.putShort(0.toShort())
         buf.putInt(targetBitrate.toInt())
+        return buf.array()
+    }
+
+    fun buildVolumeControlPacket(volumePercent: Int): ByteArray {
+        val buf = ByteBuffer.allocate(HEADER_SIZE + 8).order(ByteOrder.BIG_ENDIAN)
+        buf.putShort(MAGIC)
+        buf.put(VERSION)
+        buf.put(PKT_CONTROL_REQ)
+        buf.putInt(0)
+        buf.putLong(System.nanoTime() / 1000L)
+        buf.putShort(8)
+        buf.putShort(FLAG_NONE)
+
+        buf.put(CMD_SET_VOLUME)
+        buf.put(0.toByte())
+        buf.putShort((volumePercent and 0xFFFF).toShort())
+        buf.putInt(0)
+        return buf.array()
+    }
+
+    fun buildMicStatePacket(isEnabled: Boolean): ByteArray {
+        val buf = ByteBuffer.allocate(HEADER_SIZE + 8).order(ByteOrder.BIG_ENDIAN)
+        buf.putShort(MAGIC)
+        buf.put(VERSION)
+        buf.put(PKT_CONTROL_REQ)
+        buf.putInt(0)
+        buf.putLong(System.nanoTime() / 1000L)
+        buf.putShort(8)
+        buf.putShort(FLAG_NONE)
+
+        buf.put(CMD_MIC_STATE)
+        buf.put(0.toByte())
+        buf.putShort((if (isEnabled) 1 else 0).toShort())
+        buf.putInt(0)
+        return buf.array()
+    }
+
+    fun buildMicAudioPacket(seq: Int, audioData: ByteArray, size: Int, isPcm: Boolean = true): ByteArray {
+        val buf = ByteBuffer.allocate(HEADER_SIZE + size).order(ByteOrder.BIG_ENDIAN)
+        buf.putShort(MAGIC)
+        buf.put(VERSION)
+        buf.put(PKT_MIC_AUDIO_FRAME)
+        buf.putInt(seq)
+        buf.putLong(System.nanoTime() / 1000L)
+        buf.putShort(size.toShort())
+        buf.putShort(if (isPcm) FLAG_MIC_PCM else FLAG_NONE)
+        buf.put(audioData, 0, size)
         return buf.array()
     }
 }

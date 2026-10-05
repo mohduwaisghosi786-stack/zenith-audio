@@ -39,6 +39,14 @@ bool NetworkServer::start(uint16_t port) {
     int rcvbuf = 256 * 1024;
     setsockopt(sockfd_, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
+    // Enable broadcast for discovery beacons
+    int bcast = 1;
+    setsockopt(sockfd_, SOL_SOCKET, SO_BROADCAST, &bcast, sizeof(bcast));
+
+    // Set receive timeout so loop can periodically send discovery broadcasts
+    struct timeval tv = {1, 0}; // 1 second timeout
+    setsockopt(sockfd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     struct sockaddr_in serv_addr = {};
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
@@ -172,8 +180,15 @@ void NetworkServer::rx_thread_main() {
     uint8_t rx_buf[2048];
     struct sockaddr_in src_addr = {};
     socklen_t addr_len = sizeof(src_addr);
+    uint64_t last_bcast_us = 0;
 
     while (is_running_.load()) {
+        uint64_t now_us = get_now_us();
+        if (now_us - last_bcast_us > 2'000'000ULL) { // Broadcast beacon every 2s
+            broadcast_discovery_beacon();
+            last_bcast_us = now_us;
+        }
+
         ssize_t n = recvfrom(sockfd_, rx_buf, sizeof(rx_buf), 0,
                              (struct sockaddr*)&src_addr, &addr_len);
         if (n < 0) {
@@ -306,11 +321,29 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
             break;
         }
 
+        case zap::PKT_DISCOVERY_PROBE: {
+            send_discovery_beacon(src_addr);
+            break;
+        }
+
         case zap::PKT_CONTROL_REQ: {
             if (payload_len >= sizeof(zap::ControlPayload)) {
                 zap::ControlPayload ctrl;
                 std::memcpy(&ctrl, payload, sizeof(ctrl));
                 ctrl.to_host();
+
+                if (ctrl.command == zap::CMD_SET_VOLUME) {
+                    int vol_pct = ctrl.param16;
+                    if (vol_pct >= 0 && vol_pct <= 100) {
+                        double vol_factor = static_cast<double>(vol_pct) / 100.0;
+                        char cmd[128];
+                        snprintf(cmd, sizeof(cmd), "wpctl set-volume @DEFAULT_AUDIO_SINK@ %.2f >/dev/null 2>&1 &", vol_factor);
+                        system(cmd);
+                    }
+                } else if (ctrl.command == zap::CMD_MIC_STATE) {
+                    bool mic_on = (ctrl.param16 == 1);
+                    std::cout << "[Network] Client microphone state: " << (mic_on ? "ON" : "OFF") << "\n";
+                }
 
                 if (control_cb_) {
                     control_cb_(ctrl.command, ctrl.target_bitrate);
@@ -319,9 +352,60 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
             break;
         }
 
+        case zap::PKT_MIC_AUDIO_FRAME: {
+            bool is_pcm = (hdr.flags & zap::FLAG_MIC_PCM) != 0;
+            if (mic_cb_ && payload_len > 0) {
+                mic_cb_(payload, payload_len, is_pcm);
+            }
+            break;
+        }
+
         default:
             break;
     }
+}
+
+void NetworkServer::send_discovery_beacon(const struct sockaddr_in &dest_addr) {
+    if (sockfd_ < 0) return;
+
+    zap::Header beacon_hdr;
+    beacon_hdr.magic = zap::MAGIC;
+    beacon_hdr.version = zap::VERSION;
+    beacon_hdr.type = zap::PKT_DISCOVERY_BEACON;
+    beacon_hdr.seq_num = 0;
+    beacon_hdr.timestamp_us = get_now_us();
+    beacon_hdr.payload_size = sizeof(zap::DiscoveryPayload);
+    beacon_hdr.flags = zap::FLAG_NONE;
+
+    zap::DiscoveryPayload beacon_payload;
+    std::memset(&beacon_payload, 0, sizeof(beacon_payload));
+    char host[32] = {0};
+    gethostname(host, sizeof(host) - 1);
+    snprintf(beacon_payload.server_name, sizeof(beacon_payload.server_name), "UWAIS-PC (%s)", host);
+    beacon_payload.port = port_;
+    beacon_payload.version = zap::VERSION;
+    beacon_payload.sample_rate = current_format_.sample_rate > 0 ? current_format_.sample_rate : 48000;
+    beacon_payload.channels = current_format_.channels > 0 ? current_format_.channels : 2;
+    beacon_payload.current_bitrate_kbps = static_cast<uint16_t>(current_bitrate_ > 0 ? current_bitrate_ / 1000 : 320);
+
+    uint8_t pkt_buf[sizeof(zap::Header) + sizeof(zap::DiscoveryPayload)];
+    beacon_hdr.to_network();
+    beacon_payload.to_network();
+    std::memcpy(pkt_buf, &beacon_hdr, sizeof(beacon_hdr));
+    std::memcpy(pkt_buf + sizeof(beacon_hdr), &beacon_payload, sizeof(beacon_payload));
+
+    sendto(sockfd_, pkt_buf, sizeof(pkt_buf), 0, (const struct sockaddr*)&dest_addr, sizeof(dest_addr));
+}
+
+void NetworkServer::broadcast_discovery_beacon() {
+    if (sockfd_ < 0) return;
+
+    struct sockaddr_in bcast_addr = {};
+    bcast_addr.sin_family = AF_INET;
+    bcast_addr.sin_port = htons(port_);
+    inet_pton(AF_INET, "255.255.255.255", &bcast_addr.sin_addr);
+
+    send_discovery_beacon(bcast_addr);
 }
 
 TransportStats NetworkServer::get_stats() const {

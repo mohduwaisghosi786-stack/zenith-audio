@@ -108,6 +108,16 @@ class LowLatencyAudioPlayer(private val context: Context) {
         return bytesWritten
     }
 
+    fun setPlaybackSpeed(speed: Float) {
+        val track = audioTrack ?: return
+        try {
+            val params = track.playbackParams
+            if (Math.abs(params.speed - speed) > 0.005f) {
+                track.playbackParams = params.setSpeed(speed)
+            }
+        } catch (_: Exception) {}
+    }
+
     fun getUnderruns(): Int {
         return audioTrack?.underrunCount ?: 0
     }

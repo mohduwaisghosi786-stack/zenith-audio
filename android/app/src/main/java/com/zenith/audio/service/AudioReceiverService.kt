@@ -36,6 +36,9 @@ class AudioReceiverService : Service() {
 
     private val binder = LocalBinder()
     private var receiver: UdpAudioReceiver? = null
+    private var micRecorder: com.zenith.audio.mic.MicAudioRecorder? = null
+    private lateinit var serverDiscovery: com.zenith.audio.network.ServerDiscovery
+
     private var wakeLock: PowerManager.WakeLock? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var metricsCollectorJob: Job? = null
@@ -49,6 +52,11 @@ class AudioReceiverService : Service() {
     override fun onCreate() {
         super.onCreate()
         receiver = UdpAudioReceiver(this)
+        micRecorder = com.zenith.audio.mic.MicAudioRecorder(this) { data ->
+            receiver?.sendRaw(data)
+        }
+        serverDiscovery = com.zenith.audio.network.ServerDiscovery(this)
+        serverDiscovery.startDiscovery()
 
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ZenithAudio::StreamWakeLock")
@@ -77,9 +85,32 @@ class AudioReceiverService : Service() {
     }
 
     fun getMetricsFlow(): StateFlow<StreamMetrics>? = receiver?.metrics
+    val discoveredServers: StateFlow<List<com.zenith.audio.protocol.ZapProtocol.DiscoveredServer>>
+        get() = serverDiscovery.discoveredServers
+
+    val isMicRecording: StateFlow<Boolean>? get() = micRecorder?.isRecording
+    val micLevel: StateFlow<Float>? get() = micRecorder?.micLevel
 
     fun setBitrate(bitrateKbps: Int) {
         receiver?.setBitrate(bitrateKbps)
+    }
+
+    fun setAutoBitrate(enabled: Boolean) {
+        receiver?.setAutoBitrate(enabled)
+    }
+
+    fun setMasterVolume(volumePercent: Int) {
+        receiver?.setMasterVolume(volumePercent)
+    }
+
+    fun toggleMic(enable: Boolean): Boolean {
+        val mic = micRecorder ?: return false
+        return if (enable) {
+            mic.start()
+        } else {
+            mic.stop()
+            true
+        }
     }
 
     private fun startStreaming(ip: String, port: Int, bitrate: Int) {
@@ -115,11 +146,13 @@ class AudioReceiverService : Service() {
 
     private fun stopStreaming() {
         metricsCollectorJob?.cancel()
+        micRecorder?.stop()
         receiver?.stop()
     }
 
     override fun onDestroy() {
         stopStreaming()
+        serverDiscovery.stopDiscovery()
         wakeLock?.let {
             if (it.isHeld) it.release()
         }
