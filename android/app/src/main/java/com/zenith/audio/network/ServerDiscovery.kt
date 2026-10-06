@@ -47,9 +47,13 @@ class ServerDiscovery(private val context: Context) {
 
             try {
                 val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-                multicastLock = wifiManager?.createMulticastLock("ZenithDiscoveryLock")?.apply {
-                    setReferenceCounted(true)
-                    acquire()
+                try {
+                    multicastLock = wifiManager?.createMulticastLock("ZenithDiscoveryLock")?.apply {
+                        setReferenceCounted(true)
+                        acquire()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "MulticastLock acquire failed: ${e.message}")
                 }
 
                 socket = DatagramSocket(null).apply {
