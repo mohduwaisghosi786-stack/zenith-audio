@@ -39,6 +39,7 @@ target_link_libraries(zenith-server-win11 PRIVATE
     avrt
     ws2_32
     iphlpapi
+    ksuser
     ${OPUS_LIBRARIES}
     opus
 )
