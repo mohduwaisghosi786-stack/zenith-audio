@@ -1,21 +1,63 @@
-MIT License
+ZENITH AUDIO SOURCE-AVAILABLE LICENSE (COMMERCIAL RIGHTS RESERVED)
 
-Copyright (c) 2026 Mohd Uwais Ghosi
+Copyright (c) 2026 Mohd Uwais Ghosi. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+================================================================================
+1. GRANT OF LICENSE FOR PERSONAL & NON-COMMERCIAL USE
+================================================================================
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Permission is hereby granted, free of charge, to any individual or educational
+entity obtaining a copy of this software and associated documentation files
+(the "Software"), to use, copy, modify, compile, and run the Software solely for
+personal, educational, testing, non-commercial, and research purposes, subject to
+the following conditions:
+
+(a) The above copyright notice and this permission notice must be retained in all
+    copies or substantial portions of the Software.
+(b) You may not charge any fee or require any financial compensation for the
+    Software or any derivative work based upon it.
+
+================================================================================
+2. COMMERCIAL USE RESTRICTIONS (COMMERCIAL LICENSE REQUIRED)
+================================================================================
+
+Any Commercial Use of the Software, in whole or in part, is strictly prohibited
+without an explicit, written Commercial License agreement granted directly by
+the copyright owner, Mohd Uwais Ghosi.
+
+"Commercial Use" includes, but is not limited to:
+(a) Selling, renting, leasing, sublicensing, or monetizing the Software or any
+    derivative works.
+(b) Bundling, integrating, or embedding the Software into any commercial product,
+    hardware device, OEM software, or paid application (including paid apps on
+    the Google Play Store, Microsoft Store, Apple App Store, or Steam).
+(c) Offering the Software as a paid hosted service, SaaS, Cloud gaming backend,
+    or commercial broadcast infrastructure.
+(d) Using the Software within a commercial enterprise, business, gaming café,
+    or organization for revenue-generating operations.
+(e) White-labeling, re-branding, or distributing modified binaries under a
+    different name for commercial gain.
+
+To obtain a Commercial License, OEM agreement, or Enterprise deployment grant,
+please contact the author:
+Mohd Uwais Ghosi <mohduwaisghosi@gmail.com>
+
+================================================================================
+3. TRADEMARKS & BRANDING
+================================================================================
+
+The names "Zenith Audio", "Zenith", the project logos, graphics, screenshots,
+and associated branding are exclusive intellectual property and trademarks of
+Mohd Uwais Ghosi. This license does not grant any rights to use these trademarks
+for promoting third-party products without prior written permission.
+
+================================================================================
+4. DISCLAIMER OF WARRANTY
+================================================================================
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

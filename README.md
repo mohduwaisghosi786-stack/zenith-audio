@@ -4,7 +4,7 @@
 ### Ultra-Low-Latency Audio Streaming Engine for Linux & Windows 11 → Android
 
 [![Release](https://img.shields.io/github/v/release/mohduwaisghosi786-stack/zenith-audio?color=00E676&label=Release&style=for-the-badge)](https://github.com/mohduwaisghosi786-stack/zenith-audio/releases/latest)
-[![License](https://img.shields.io/badge/License-MIT-00E5FF.svg?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/badge/License-Commercial%20Reserved%20%7C%20Free%20Personal-00E5FF.svg?style=for-the-badge)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%2011-7C4DFF.svg?style=for-the-badge)](https://github.com/mohduwaisghosi786-stack/zenith-audio)
 [![Android](https://img.shields.io/badge/Android-15%20(API%2035)-3DDC84.svg?style=for-the-badge&logo=android&logoColor=white)](https://github.com/mohduwaisghosi786-stack/zenith-audio/releases)
 [![Audio](https://img.shields.io/badge/Codec-Opus%20320kbps%20FEC-FF5252.svg?style=for-the-badge)](https://opus-codec.org)
@@ -194,9 +194,23 @@ Feel free to check out the [issues page](https://github.com/mohduwaisghosi786-st
 
 ---
 
+## 💼 Commercial Licensing & Enterprise Partnerships
+
+Zenith Audio is free for individual, educational, and personal non-commercial use.
+
+If you are a company, OEM, hardware manufacturer, gaming café, or business looking to:
+- Embed Zenith Audio into commercial hardware, soundcards, or VR/AR devices.
+- Sell or bundle Zenith Audio within proprietary commercial software.
+- Acquire a white-label or custom branded distribution.
+
+Please contact **Mohd Uwais Ghosi** at **mohduwaisghosi@gmail.com** for commercial licensing terms and enterprise partnerships.
+
+---
+
 ## 📜 License
 
-Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for more information.
+Copyright (c) 2026 **Mohd Uwais Ghosi**. All rights reserved.  
+Free for personal and educational use. Commercial redistribution, re-branding, or monetization is strictly prohibited without an explicit commercial license. See [`LICENSE`](LICENSE) for complete terms.
 
 ---
 
