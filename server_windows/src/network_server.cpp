@@ -1,11 +1,5 @@
 #include "network_server.hpp"
 #include <iostream>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <ifaddrs.h>
-#include <net/if.h>
 #include <chrono>
 
 namespace zenith {
@@ -23,71 +17,75 @@ NetworkServer::~NetworkServer() {
 
 bool NetworkServer::start(uint16_t port) {
     if (is_running_.load()) return false;
-
     port_ = port;
-    sockfd_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd_ < 0) {
-        perror("[Network] Failed to create UDP socket");
+
+    WSADATA wsaData;
+    int wsaRes = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (wsaRes != 0) {
+        std::cerr << "[Network] WSAStartup failed: " << wsaRes << "\n";
         return false;
     }
 
-    // Set reuseaddr
-    int opt = 1;
-    setsockopt(sockfd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    sockfd_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sockfd_ == INVALID_SOCKET) {
+        std::cerr << "[Network] Failed to create UDP socket: " << WSAGetLastError() << "\n";
+        WSACleanup();
+        return false;
+    }
 
-    // Increase socket send and receive buffers for low-latency bursts
+    BOOL opt = TRUE;
+    setsockopt(sockfd_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&opt), sizeof(opt));
+
     int sndbuf = 256 * 1024;
-    setsockopt(sockfd_, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+    setsockopt(sockfd_, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&sndbuf), sizeof(sndbuf));
     int rcvbuf = 256 * 1024;
-    setsockopt(sockfd_, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    setsockopt(sockfd_, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&rcvbuf), sizeof(rcvbuf));
 
-    // Enable broadcast for discovery beacons
-    int bcast = 1;
-    setsockopt(sockfd_, SOL_SOCKET, SO_BROADCAST, &bcast, sizeof(bcast));
+    BOOL bcast = TRUE;
+    setsockopt(sockfd_, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&bcast), sizeof(bcast));
 
-    // Set receive timeout so loop can periodically send discovery broadcasts
-    struct timeval tv = {1, 0}; // 1 second timeout
-    setsockopt(sockfd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    DWORD timeout_ms = 1000;
+    setsockopt(sockfd_, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
 
     struct sockaddr_in serv_addr = {};
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(port_);
 
-    if (bind(sockfd_, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("[Network] Socket bind failed");
-        close(sockfd_);
-        sockfd_ = -1;
+    if (bind(sockfd_, reinterpret_cast<struct sockaddr*>(&serv_addr), sizeof(serv_addr)) == SOCKET_ERROR) {
+        std::cerr << "[Network] Socket bind failed: " << WSAGetLastError() << "\n";
+        closesocket(sockfd_);
+        sockfd_ = INVALID_SOCKET;
+        WSACleanup();
         return false;
     }
 
     is_running_.store(true);
     rx_thread_ = std::thread(&NetworkServer::rx_thread_main, this);
 
-    std::cout << "[Network] Zenith UDP server listening on port " << port_ << "\n";
+    std::cout << "[Network] Zenith Windows 11 UDP server listening on port " << port_ << "\n";
     return true;
 }
 
 void NetworkServer::stop() {
     if (!is_running_.load()) return;
-
     is_running_.store(false);
 
-    if (sockfd_ >= 0) {
-        shutdown(sockfd_, SHUT_RDWR);
-        close(sockfd_);
-        sockfd_ = -1;
+    if (sockfd_ != INVALID_SOCKET) {
+        closesocket(sockfd_);
+        sockfd_ = INVALID_SOCKET;
     }
 
     if (rx_thread_.joinable()) {
         rx_thread_.join();
     }
 
-    std::cout << "[Network] Zenith UDP server stopped.\n";
+    WSACleanup();
+    std::cout << "[Network] Zenith Windows 11 server stopped.\n";
 }
 
 void NetworkServer::broadcast_audio(const uint8_t *payload, size_t size, uint64_t timestamp_us, bool fec) {
-    if (!is_running_.load() || sockfd_ < 0) return;
+    if (!is_running_.load() || sockfd_ == INVALID_SOCKET) return;
 
     std::vector<struct sockaddr_in> target_addrs;
     {
@@ -101,10 +99,8 @@ void NetworkServer::broadcast_audio(const uint8_t *payload, size_t size, uint64_
 
     uint32_t seq = current_seq_.fetch_add(1, std::memory_order_relaxed);
 
-    // Prepare packet buffer: header + payload
     uint8_t packet_buffer[2048];
     if (sizeof(zap::Header) + size > sizeof(packet_buffer)) {
-        std::cerr << "[Network] Packet size exceeds buffer\n";
         return;
     }
 
@@ -125,81 +121,39 @@ void NetworkServer::broadcast_audio(const uint8_t *payload, size_t size, uint64_
     size_t total_packet_size = sizeof(net_hdr) + size;
 
     for (const auto &addr : target_addrs) {
-        sendto(sockfd_, packet_buffer, total_packet_size, 0,
-               (const struct sockaddr*)&addr, sizeof(addr));
-    }
-
-    packets_sent_.fetch_add(1, std::memory_order_relaxed);
-    bytes_sent_.fetch_add(total_packet_size, std::memory_order_relaxed);
-}
-
-void NetworkServer::send_announce(const AudioFormat &format, int bitrate) {
-    current_format_ = format;
-    current_bitrate_ = bitrate;
-
-    std::vector<struct sockaddr_in> target_addrs;
-    {
-        std::lock_guard<std::mutex> lock(clients_mutex_);
-        if (clients_.empty()) return;
-        for (const auto &c : clients_) {
-            target_addrs.push_back(c.addr);
+        int sent = sendto(sockfd_, reinterpret_cast<const char*>(packet_buffer),
+                          static_cast<int>(total_packet_size), 0,
+                          reinterpret_cast<const struct sockaddr*>(&addr), sizeof(addr));
+        if (sent > 0) {
+            packets_sent_.fetch_add(1, std::memory_order_relaxed);
+            bytes_sent_.fetch_add(sent, std::memory_order_relaxed);
         }
-    }
-
-    zap::Header hdr;
-    hdr.magic = zap::MAGIC;
-    hdr.version = zap::VERSION;
-    hdr.type = zap::PKT_SERVER_ANNOUNCE;
-    hdr.seq_num = current_seq_.load(std::memory_order_relaxed);
-    hdr.timestamp_us = get_now_us();
-    hdr.payload_size = sizeof(zap::AnnouncePayload);
-    hdr.flags = zap::FLAG_NONE;
-
-    zap::AnnouncePayload payload;
-    payload.sample_rate = format.sample_rate;
-    payload.channels = format.channels;
-    payload.frame_samples = format.frame_samples;
-    payload.bitrate_bps = bitrate;
-    payload.codec_type = zap::CODEC_OPUS;
-    std::memset(payload.reserved, 0, sizeof(payload.reserved));
-
-    uint8_t packet_buffer[sizeof(zap::Header) + sizeof(zap::AnnouncePayload)];
-    zap::Header net_hdr = hdr;
-    net_hdr.to_network();
-    zap::AnnouncePayload net_payload = payload;
-    net_payload.to_network();
-
-    std::memcpy(packet_buffer, &net_hdr, sizeof(net_hdr));
-    std::memcpy(packet_buffer + sizeof(net_hdr), &net_payload, sizeof(net_payload));
-
-    for (const auto &addr : target_addrs) {
-        sendto(sockfd_, packet_buffer, sizeof(packet_buffer), 0,
-               (const struct sockaddr*)&addr, sizeof(addr));
     }
 }
 
 void NetworkServer::rx_thread_main() {
     uint8_t rx_buf[2048];
     struct sockaddr_in src_addr = {};
-    socklen_t addr_len = sizeof(src_addr);
+    int addr_len = sizeof(src_addr);
     uint64_t last_bcast_us = 0;
 
     while (is_running_.load()) {
         uint64_t now_us = get_now_us();
-        if (now_us - last_bcast_us > 2'000'000ULL) { // Broadcast beacon every 2s
+        if (now_us - last_bcast_us > 2'000'000ULL) {
             broadcast_discovery_beacon();
             last_bcast_us = now_us;
         }
 
-        ssize_t n = recvfrom(sockfd_, rx_buf, sizeof(rx_buf), 0,
-                             (struct sockaddr*)&src_addr, &addr_len);
-        if (n < 0) {
+        addr_len = sizeof(src_addr);
+        int n = recvfrom(sockfd_, reinterpret_cast<char*>(rx_buf), sizeof(rx_buf), 0,
+                         reinterpret_cast<struct sockaddr*>(&src_addr), &addr_len);
+        if (n == SOCKET_ERROR) {
             if (!is_running_.load()) break;
             continue;
         }
 
-        if (n >= static_cast<ssize_t>(sizeof(zap::Header))) {
-            handle_incoming_packet(rx_buf, n, src_addr);
+        if (n >= static_cast<int>(sizeof(zap::Header))) {
+            handle_incoming_packet(rx_buf, static_cast<size_t>(n), src_addr);
         }
     }
 }
@@ -222,21 +176,21 @@ void NetworkServer::update_or_add_client(const struct sockaddr_in &addr) {
     clients_.push_back(new_client);
 
     char ip_str[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &addr.sin_addr, ip_str, sizeof(ip_str));
-    std::cout << "[Network] Registered new client: " << ip_str << ":" << ntohs(addr.sin_port)
-              << " (Total clients: " << clients_.size() << ")\n";
+    inet_ntop(AF_INET, const_cast<IN_ADDR*>(&addr.sin_addr), ip_str, sizeof(ip_str));
+    std::cout << "[Network] Registered Android client: " << ip_str << ":" << ntohs(addr.sin_port)
+              << " (Active clients: " << clients_.size() << ")\n";
 }
 
 void NetworkServer::cleanup_stale_clients() {
     uint64_t now_us = get_now_us();
-    constexpr uint64_t TIMEOUT_US = 8'000'000; // 8 seconds timeout
+    constexpr uint64_t TIMEOUT_US = 8'000'000;
 
     std::lock_guard<std::mutex> lock(clients_mutex_);
     for (auto it = clients_.begin(); it != clients_.end();) {
         if (now_us - it->last_seen_us > TIMEOUT_US) {
             char ip_str[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &it->addr.sin_addr, ip_str, sizeof(ip_str));
-            std::cout << "[Network] Client timed out: " << ip_str << ":" << ntohs(it->addr.sin_port) << "\n";
+            inet_ntop(AF_INET, const_cast<IN_ADDR*>(&it->addr.sin_addr), ip_str, sizeof(ip_str));
+            std::cout << "[Network] Client disconnected: " << ip_str << ":" << ntohs(it->addr.sin_port) << "\n";
             it = clients_.erase(it);
         } else {
             ++it;
@@ -245,13 +199,13 @@ void NetworkServer::cleanup_stale_clients() {
 }
 
 void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
-                                          const struct sockaddr_in &src_addr) {
+                                           const struct sockaddr_in &src_addr) {
     zap::Header hdr;
     std::memcpy(&hdr, buffer, sizeof(hdr));
     hdr.to_host();
 
     if (hdr.magic != zap::MAGIC || hdr.version != zap::VERSION) {
-        return; // Ignore unknown or malformed packets
+        return;
     }
 
     update_or_add_client(src_addr);
@@ -267,7 +221,6 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                 std::memcpy(&ping, payload, sizeof(ping));
                 ping.to_host();
 
-                // Reply with PONG
                 zap::Header pong_hdr;
                 pong_hdr.magic = zap::MAGIC;
                 pong_hdr.version = zap::VERSION;
@@ -288,8 +241,8 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                 std::memcpy(pong_buf, &pong_hdr, sizeof(pong_hdr));
                 std::memcpy(pong_buf + sizeof(pong_hdr), &pong_payload, sizeof(pong_payload));
 
-                sendto(sockfd_, pong_buf, sizeof(pong_buf), 0,
-                       (const struct sockaddr*)&src_addr, sizeof(src_addr));
+                sendto(sockfd_, reinterpret_cast<const char*>(pong_buf), sizeof(pong_buf), 0,
+                       reinterpret_cast<const struct sockaddr*>(&src_addr), sizeof(src_addr));
             }
             break;
         }
@@ -334,19 +287,6 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
                 std::memcpy(&ctrl, payload, sizeof(ctrl));
                 ctrl.to_host();
 
-                if (ctrl.command == zap::CMD_SET_VOLUME) {
-                    int vol_pct = ctrl.param16;
-                    if (vol_pct >= 0 && vol_pct <= 100) {
-                        double vol_factor = static_cast<double>(vol_pct) / 100.0;
-                        char cmd[128];
-                        snprintf(cmd, sizeof(cmd), "wpctl set-volume @DEFAULT_AUDIO_SINK@ %.2f >/dev/null 2>&1 &", vol_factor);
-                        system(cmd);
-                    }
-                } else if (ctrl.command == zap::CMD_MIC_STATE) {
-                    bool mic_on = (ctrl.param16 == 1);
-                    std::cout << "[Network] Client microphone state: " << (mic_on ? "ON" : "OFF") << "\n";
-                }
-
                 if (control_cb_) {
                     control_cb_(ctrl.command, ctrl.target_bitrate);
                 }
@@ -368,7 +308,7 @@ void NetworkServer::handle_incoming_packet(const uint8_t *buffer, size_t size,
 }
 
 void NetworkServer::send_discovery_beacon(const struct sockaddr_in &dest_addr) {
-    if (sockfd_ < 0) return;
+    if (sockfd_ == INVALID_SOCKET) return;
 
     zap::Header beacon_hdr;
     beacon_hdr.magic = zap::MAGIC;
@@ -381,9 +321,12 @@ void NetworkServer::send_discovery_beacon(const struct sockaddr_in &dest_addr) {
 
     zap::DiscoveryPayload beacon_payload;
     std::memset(&beacon_payload, 0, sizeof(beacon_payload));
+
     char host[32] = {0};
-    gethostname(host, sizeof(host) - 1);
-    snprintf(beacon_payload.server_name, sizeof(beacon_payload.server_name), "UWAIS-PC (%s)", host);
+    DWORD host_len = sizeof(host);
+    GetComputerNameA(host, &host_len);
+    snprintf(beacon_payload.server_name, sizeof(beacon_payload.server_name), "WIN11 (%s)", host);
+
     beacon_payload.port = port_;
     beacon_payload.version = zap::VERSION;
     beacon_payload.sample_rate = current_format_.sample_rate > 0 ? current_format_.sample_rate : 48000;
@@ -396,28 +339,45 @@ void NetworkServer::send_discovery_beacon(const struct sockaddr_in &dest_addr) {
     std::memcpy(pkt_buf, &beacon_hdr, sizeof(beacon_hdr));
     std::memcpy(pkt_buf + sizeof(beacon_hdr), &beacon_payload, sizeof(beacon_payload));
 
-    sendto(sockfd_, pkt_buf, sizeof(pkt_buf), 0, (const struct sockaddr*)&dest_addr, sizeof(dest_addr));
+    sendto(sockfd_, reinterpret_cast<const char*>(pkt_buf), sizeof(pkt_buf), 0,
+           reinterpret_cast<const struct sockaddr*>(&dest_addr), sizeof(dest_addr));
 }
 
 void NetworkServer::broadcast_discovery_beacon() {
-    if (sockfd_ < 0) return;
+    if (sockfd_ == INVALID_SOCKET) return;
 
-    // 1. Broadcast to each active network interface's broadcast address (Wi-Fi, USB RNDIS, Ethernet, etc.)
-    struct ifaddrs *ifaddr = nullptr;
-    if (getifaddrs(&ifaddr) == 0) {
-        for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
-            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
-            if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) continue;
-            if ((ifa->ifa_flags & IFF_BROADCAST) && ifa->ifa_broadaddr) {
-                struct sockaddr_in bcast = *(reinterpret_cast<struct sockaddr_in*>(ifa->ifa_broadaddr));
-                bcast.sin_port = htons(port_);
-                send_discovery_beacon(bcast);
-            }
-        }
-        freeifaddrs(ifaddr);
+    // Broadcast on all active network interfaces via GetAdaptersAddresses
+    ULONG outBufLen = 15000;
+    std::vector<BYTE> buf(outBufLen);
+    PIP_ADAPTER_ADDRESSES pAddresses = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
+
+    ULONG flags = GAA_FLAG_INCLUDE_PREFIX | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST;
+    ULONG dwRetVal = GetAdaptersAddresses(AF_INET, flags, nullptr, pAddresses, &outBufLen);
+    if (dwRetVal == ERROR_BUFFER_OVERFLOW) {
+        buf.resize(outBufLen);
+        pAddresses = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
+        dwRetVal = GetAdaptersAddresses(AF_INET, flags, nullptr, pAddresses, &outBufLen);
     }
 
-    // 2. Global fallback broadcast
+    if (dwRetVal == NO_ERROR) {
+        for (PIP_ADAPTER_ADDRESSES pCurr = pAddresses; pCurr != nullptr; pCurr = pCurr->Next) {
+            if (pCurr->OperStatus != IfOperStatusUp || pCurr->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+
+            for (PIP_ADAPTER_UNICAST_ADDRESS pUni = pCurr->FirstUnicastAddress; pUni != nullptr; pUni = pUni->Next) {
+                if (pUni->Address.lpSockaddr->sa_family == AF_INET) {
+                    struct sockaddr_in *sin = reinterpret_cast<struct sockaddr_in*>(pUni->Address.lpSockaddr);
+                    // Compute subnet broadcast address
+                    struct sockaddr_in bcast = *sin;
+                    bcast.sin_port = htons(port_);
+                    // Send to standard class-c broadcast fallback for the interface
+                    bcast.sin_addr.s_addr |= htonl(0x000000FF);
+                    send_discovery_beacon(bcast);
+                }
+            }
+        }
+    }
+
+    // Global broadcast fallback
     struct sockaddr_in global_bcast = {};
     global_bcast.sin_family = AF_INET;
     global_bcast.sin_port = htons(port_);
@@ -442,6 +402,16 @@ TransportStats NetworkServer::get_stats() const {
     }
 
     return stats;
+}
+
+size_t NetworkServer::get_active_client_count() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(clients_mutex_));
+    return clients_.size();
+}
+
+void NetworkServer::send_announce(const AudioFormat &format, int bitrate) {
+    current_format_ = format;
+    current_bitrate_ = bitrate;
 }
 
 } // namespace zenith

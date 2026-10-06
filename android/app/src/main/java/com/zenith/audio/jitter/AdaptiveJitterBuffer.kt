@@ -25,10 +25,19 @@ class AdaptiveJitterBuffer(
     private var lastTransitTimeUs: Long = 0L
     private var hasPrevPacket: Boolean = false
 
-    private var targetDelayMs: Double = 40.0
+    private var targetDelayMs: Double = 10.0
+    private var isGamingMode: Boolean = true
     private var isPrebuffered = false
     private var missingSeqSinceMs: Long = 0L
     private var emptySinceMs: Long = 0L
+
+    fun setGamingMode(enabled: Boolean) {
+        synchronized(lock) {
+            isGamingMode = enabled
+            targetDelayMs = if (enabled) 5.0 else 35.0
+            isPrebuffered = false
+        }
+    }
 
     // Packet memory pool to eliminate GC allocations
     private val packetPool = ConcurrentLinkedQueue<PooledPacket>()
@@ -76,9 +85,13 @@ class AdaptiveJitterBuffer(
         }
         lastTransitTimeUs = transitUs
 
-        // Adapt target delay: 2.0 * jitter + 20ms margin, clamped between minDelayMs and maxDelayMs
+        // Adapt target delay: aggressive 2ms for gaming mode, buffer-safe 30ms+ for media mode
         val jitterMs = estimatedJitterUs / 1000.0
-        val computedTarget = max(minDelayMs.toDouble(), min(maxDelayMs.toDouble(), jitterMs * 2.0 + 20.0))
+        val computedTarget = if (isGamingMode) {
+            max(2.0, min(15.0, jitterMs * 1.2 + 2.0))
+        } else {
+            max(minDelayMs.toDouble(), min(maxDelayMs.toDouble(), jitterMs * 2.0 + 20.0))
+        }
         targetDelayMs = targetDelayMs * 0.98 + computedTarget * 0.02
 
         synchronized(lock) {
@@ -97,7 +110,7 @@ class AdaptiveJitterBuffer(
 
             // If jitter buffer accumulated too large of a backlog (> 150ms),
             // drain the oldest packets down to maintain low latency.
-            val maxBacklogFrames = max(15, (targetDelayMs / 10.0 * 2.0).toInt())
+            val maxBacklogFrames = if (isGamingMode) 4 else max(15, (targetDelayMs / 10.0 * 2.0).toInt())
             while (packetMap.size > maxBacklogFrames) {
                 val oldestKey = packetMap.firstKey()
                 val dropped = packetMap.remove(oldestKey)
@@ -111,8 +124,8 @@ class AdaptiveJitterBuffer(
         val nowMs = System.currentTimeMillis()
 
         synchronized(lock) {
-            // Target frames for smooth cushion (e.g. 4 frames = 40ms)
-            val requiredCushion = max(3, (targetDelayMs / 10.0).toInt())
+            // Target frames for smooth cushion (1 frame for gaming = 0.5ms-2ms, 3+ frames for media)
+            val requiredCushion = if (isGamingMode) 1 else max(3, (targetDelayMs / 10.0).toInt())
 
             if (!isPrebuffered) {
                 if (packetMap.size >= requiredCushion) {

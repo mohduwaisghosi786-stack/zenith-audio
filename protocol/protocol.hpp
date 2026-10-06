@@ -2,8 +2,14 @@
 
 #include <cstdint>
 #include <cstring>
-#include <arpa/inet.h>
 
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <stdlib.h>
+#define htobe64_compat(x) _byteswap_uint64(x)
+#define be64toh_compat(x) _byteswap_uint64(x)
+#else
+#include <arpa/inet.h>
 #if defined(__linux__)
 #include <endian.h>
 #define htobe64_compat(x) htobe64(x)
@@ -11,6 +17,7 @@
 #else
 #define htobe64_compat(x) (x)
 #define be64toh_compat(x) (x)
+#endif
 #endif
 
 namespace zap {

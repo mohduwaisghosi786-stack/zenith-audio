@@ -130,6 +130,13 @@ class UdpAudioReceiver(private val context: Context) {
         _metrics.value = _metrics.value.copy(isAutoBitrate = enabled)
     }
 
+    val dspEngine: com.zenith.audio.dsp.DspEqualizerEngine
+        get() = audioPlayer.dspEngine
+
+    fun setGamingMode(enabled: Boolean) {
+        jitterBuffer.setGamingMode(enabled)
+    }
+
     fun setCallDuckingActive(active: Boolean) {
         isCallDuckingActive = active
         _metrics.value = _metrics.value.copy(isCallDuckingActive = active)

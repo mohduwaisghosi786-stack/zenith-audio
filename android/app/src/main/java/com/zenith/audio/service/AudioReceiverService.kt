@@ -73,6 +73,14 @@ class AudioReceiverService : Service() {
 
         failoverManager = com.zenith.audio.network.NetworkFailoverManager(this) { newTransport, targetIp ->
             receiver?.switchEndpoint(targetIp, transportName = newTransport)
+        }.apply { start("192.168.1.9") }
+
+        serviceScope.launch {
+            serverDiscovery.latestDiscoveredServer.collect { server ->
+                if (server != null) {
+                    failoverManager?.updateWifiServerIp(server.ip)
+                }
+            }
         }
 
         aoaDacManager = com.zenith.audio.usb.AoaDacManager(this) { isUsb, targetIp ->
@@ -124,12 +132,24 @@ class AudioReceiverService : Service() {
     val isAoaEnabled: StateFlow<Boolean>? get() = aoaDacManager?.isAoaEnabled
     val isUsbConnected: StateFlow<Boolean>? get() = aoaDacManager?.isUsbConnected
 
+    val activeDetectedIp: StateFlow<String>? get() = failoverManager?.activeDetectedIp
+    val activeTransport: StateFlow<String>? get() = failoverManager?.activeTransport
+    val dspEngine: com.zenith.audio.dsp.DspEqualizerEngine? get() = receiver?.dspEngine
+
     fun setBitrate(bitrateKbps: Int) {
         receiver?.setBitrate(bitrateKbps)
     }
 
     fun setAutoBitrate(enabled: Boolean) {
         receiver?.setAutoBitrate(enabled)
+    }
+
+    fun setGamingMode(enabled: Boolean) {
+        receiver?.setGamingMode(enabled)
+    }
+
+    fun triggerFastDiscovery() {
+        serverDiscovery.triggerFastScan()
     }
 
     fun setMasterVolume(volumePercent: Int) {
@@ -157,7 +177,7 @@ class AudioReceiverService : Service() {
 
     private fun startStreaming(ip: String, port: Int, bitrate: Int) {
         failoverManager?.updateWifiServerIp(ip)
-        failoverManager?.start(ip)
+        failoverManager?.setStreamingActive(true)
         receiver?.start(ip, port, bitrate)
 
         metricsCollectorJob?.cancel()
@@ -190,7 +210,7 @@ class AudioReceiverService : Service() {
 
     private fun stopStreaming() {
         metricsCollectorJob?.cancel()
-        failoverManager?.stop()
+        failoverManager?.setStreamingActive(false)
         micRecorder?.stop()
         receiver?.stop()
     }

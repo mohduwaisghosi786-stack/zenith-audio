@@ -11,7 +11,10 @@ import android.os.Build
 import android.util.Log
 import java.nio.ByteBuffer
 
-class LowLatencyAudioPlayer(private val context: Context) {
+class LowLatencyAudioPlayer(
+    private val context: Context,
+    val dspEngine: com.zenith.audio.dsp.DspEqualizerEngine = com.zenith.audio.dsp.DspEqualizerEngine(context)
+) {
     companion object {
         private const val TAG = "AudioPlayer"
         const val SAMPLE_RATE = 48000
@@ -55,6 +58,7 @@ class LowLatencyAudioPlayer(private val context: Context) {
             track.play()
             audioTrack = track
             totalFramesWritten = (primeSilence.size / 4).toLong()
+            dspEngine.attach(track.audioSessionId)
             Log.i(TAG, "LowLatencyAudioPlayer started. Buffer size: $minBufferSize bytes")
             true
         } catch (e: Exception) {
@@ -76,6 +80,7 @@ class LowLatencyAudioPlayer(private val context: Context) {
 
     fun stop() {
         try {
+            dspEngine.detach()
             audioTrack?.let {
                 if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
                     it.stop()

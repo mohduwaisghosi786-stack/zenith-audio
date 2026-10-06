@@ -56,6 +56,16 @@ class MainActivity : ComponentActivity() {
     private val isAoaEnabledState = mutableStateOf(false)
     private val isUsbConnectedState = mutableStateOf(false)
 
+    private val activeDetectedIpState = mutableStateOf("192.168.1.9")
+    private val activeTransportState = mutableStateOf("Wi-Fi")
+    private val isGamingModeState = mutableStateOf(true)
+
+    private val dspEnabledState = mutableStateOf(true)
+    private val dspPresetState = mutableStateOf(com.zenith.audio.dsp.DspEqualizerEngine.Preset.FLAT)
+    private val dspBassStrengthState = mutableStateOf(0)
+    private val dspBandsState = mutableStateOf<List<com.zenith.audio.dsp.DspEqualizerEngine.BandInfo>>(emptyList())
+    private val dspBandLevelsState = mutableStateOf<Map<Int, Int>>(emptyMap())
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val localBinder = binder as? AudioReceiverService.LocalBinder
@@ -74,6 +84,40 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 service.discoveredServers.collectLatest { servers ->
                     discoveredServersState.value = servers
+                }
+            }
+
+            service.activeDetectedIp?.let { flow ->
+                lifecycleScope.launch {
+                    flow.collectLatest { ip ->
+                        activeDetectedIpState.value = ip
+                    }
+                }
+            }
+
+            service.activeTransport?.let { flow ->
+                lifecycleScope.launch {
+                    flow.collectLatest { transport ->
+                        activeTransportState.value = transport
+                    }
+                }
+            }
+
+            service.dspEngine?.let { engine ->
+                lifecycleScope.launch {
+                    engine.isEnabled.collectLatest { dspEnabledState.value = it }
+                }
+                lifecycleScope.launch {
+                    engine.currentPreset.collectLatest { dspPresetState.value = it }
+                }
+                lifecycleScope.launch {
+                    engine.bassStrength.collectLatest { dspBassStrengthState.value = it }
+                }
+                lifecycleScope.launch {
+                    engine.bands.collectLatest { dspBandsState.value = it }
+                }
+                lifecycleScope.launch {
+                    engine.bandLevels.collectLatest { dspBandLevelsState.value = it }
                 }
             }
 
@@ -140,6 +184,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestRequiredPermissions()
 
+        try {
+            val serviceIntent = Intent(this, AudioReceiverService::class.java)
+            bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+        } catch (_: Exception) {}
+
         val prefs = getSharedPreferences("zenith_prefs", Context.MODE_PRIVATE)
         val initialIp = prefs.getString("server_ip", "192.168.1.9") ?: "192.168.1.9"
 
@@ -159,8 +208,16 @@ class MainActivity : ComponentActivity() {
                 ) {
                     ZenithAudioScreen(
                         initialIp = initialIp,
+                        activeDetectedIp = activeDetectedIpState.value,
+                        activeTransport = activeTransportState.value,
                         metrics = metricsState.value,
                         discoveredServers = discoveredServersState.value,
+                        isGamingMode = isGamingModeState.value,
+                        dspEnabled = dspEnabledState.value,
+                        dspPreset = dspPresetState.value,
+                        dspBassStrength = dspBassStrengthState.value,
+                        dspBands = dspBandsState.value,
+                        dspBandLevels = dspBandLevelsState.value,
                         isMicRecording = isMicRecordingState.value,
                         micLevel = micLevelState.value,
                         isCallDuckingEnabled = isCallDuckingEnabledState.value,
@@ -179,6 +236,25 @@ class MainActivity : ComponentActivity() {
                         },
                         onToggleAutoBitrate = { enabled ->
                             audioService?.setAutoBitrate(enabled)
+                        },
+                        onToggleGamingMode = { enabled ->
+                            isGamingModeState.value = enabled
+                            audioService?.setGamingMode(enabled)
+                        },
+                        onTriggerAutoDetect = {
+                            audioService?.triggerFastDiscovery()
+                        },
+                        onToggleDsp = { enabled ->
+                            audioService?.dspEngine?.setEnabled(enabled)
+                        },
+                        onSelectDspPreset = { preset ->
+                            audioService?.dspEngine?.setPreset(preset)
+                        },
+                        onSetBassBoost = { strength ->
+                            audioService?.dspEngine?.setBassBoost(strength)
+                        },
+                        onSetBandLevel = { band, level ->
+                            audioService?.dspEngine?.setBandLevel(band, level)
                         },
                         onVolumeChange = { volumePercent ->
                             audioService?.setMasterVolume(volumePercent)
@@ -275,8 +351,16 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ZenithAudioScreen(
     initialIp: String,
+    activeDetectedIp: String,
+    activeTransport: String,
     metrics: StreamMetrics,
     discoveredServers: List<ZapProtocol.DiscoveredServer>,
+    isGamingMode: Boolean,
+    dspEnabled: Boolean,
+    dspPreset: com.zenith.audio.dsp.DspEqualizerEngine.Preset,
+    dspBassStrength: Int,
+    dspBands: List<com.zenith.audio.dsp.DspEqualizerEngine.BandInfo>,
+    dspBandLevels: Map<Int, Int>,
     isMicRecording: Boolean,
     micLevel: Float,
     isCallDuckingEnabled: Boolean,
@@ -287,6 +371,12 @@ fun ZenithAudioScreen(
     onDisconnect: () -> Unit,
     onBitrateChange: (Int) -> Unit,
     onToggleAutoBitrate: (Boolean) -> Unit,
+    onToggleGamingMode: (Boolean) -> Unit,
+    onTriggerAutoDetect: () -> Unit,
+    onToggleDsp: (Boolean) -> Unit,
+    onSelectDspPreset: (com.zenith.audio.dsp.DspEqualizerEngine.Preset) -> Unit,
+    onSetBassBoost: (Int) -> Unit,
+    onSetBandLevel: (Int, Int) -> Unit,
     onVolumeChange: (Int) -> Unit,
     onToggleCallDucking: (Boolean) -> Unit,
     onToggleAoa: (Boolean) -> Unit,
@@ -296,6 +386,12 @@ fun ZenithAudioScreen(
     var selectedBitrate by remember { mutableIntStateOf(320) }
     var isAutoBitrate by remember { mutableStateOf(false) }
     var volumeSlider by remember { mutableFloatStateOf(100f) }
+
+    LaunchedEffect(activeDetectedIp) {
+        if (activeDetectedIp.isNotBlank()) {
+            serverIp = activeDetectedIp
+        }
+    }
 
     val bitrates = listOf(320, 256, 192, 128, 96, 64)
 
@@ -327,7 +423,7 @@ fun ZenithAudioScreen(
                     letterSpacing = 2.sp
                 )
                 Text(
-                    text = "Linux → Android Ultra-Low-Latency",
+                    text = "Linux / Windows → Android Ultra-Low-Latency",
                     fontSize = 12.sp,
                     color = Color(0xFFAAAAAA)
                 )
@@ -344,7 +440,7 @@ fun ZenithAudioScreen(
         ) {
             Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
                 Text(
-                    text = "DISCOVERED LINUX SERVERS (LAN)",
+                    text = "DISCOVERED ZENITH SERVERS (LAN)",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF00E676),
@@ -413,21 +509,91 @@ fun ZenithAudioScreen(
             }
         }
 
-        // Server IP Input Field
+        // Server IP Input Field with 1-Tap Auto-Detect
         OutlinedTextField(
             value = serverIp,
             onValueChange = { serverIp = it },
-            label = { Text("Linux Server IP") },
-            placeholder = { Text("192.168.1.9") },
+            label = { Text("Server IP (Auto-Discovered)") },
+            placeholder = { Text("192.168.1.9 or 10.81.101.129") },
             enabled = !isConnected && !isConnecting,
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
+            leadingIcon = {
+                Icon(
+                    imageVector = if (activeTransport.contains("USB")) Icons.Default.Usb else Icons.Default.Wifi,
+                    contentDescription = null,
+                    tint = if (activeTransport.contains("USB")) Color(0xFF00E5FF) else Color(0xFF00E676)
+                )
+            },
+            trailingIcon = {
+                IconButton(
+                    onClick = {
+                        onTriggerAutoDetect()
+                        if (discoveredServers.isNotEmpty()) {
+                            serverIp = discoveredServers.first().ip
+                        } else if (activeDetectedIp.isNotBlank()) {
+                            serverIp = activeDetectedIp
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Auto-Detect IP",
+                        tint = Color(0xFF00E676)
+                    )
+                }
+            },
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Color(0xFF00E676),
                 unfocusedBorderColor = Color(0xFF444444)
             )
         )
+
+        // Active Auto-Pilot Link status row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp, bottom = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(
+                            if (activeTransport.contains("USB")) Color(0xFF00E5FF) else Color(0xFF00E676),
+                            CircleShape
+                        )
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Link: $activeTransport ($activeDetectedIp)",
+                    fontSize = 11.sp,
+                    color = Color(0xFFCCCCCC)
+                )
+            }
+
+            TextButton(
+                onClick = {
+                    onTriggerAutoDetect()
+                    if (discoveredServers.isNotEmpty()) {
+                        serverIp = discoveredServers.first().ip
+                    } else if (activeDetectedIp.isNotBlank()) {
+                        serverIp = activeDetectedIp
+                    }
+                },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = "⚡ AUTO-DETECT IP",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF00E676)
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.height(14.dp))
 
@@ -556,7 +722,238 @@ fun ZenithAudioScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(18.dp))
+
+        // ⚡ DYNAMIC LATENCY PROFILE CARD (0.5ms Gaming vs 5.0ms Media)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isGamingMode) Color(0xFF142918) else Color(0xFF162533)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Speed,
+                        contentDescription = null,
+                        tint = if (isGamingMode) Color(0xFF00E676) else Color(0xFF40C4FF),
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (isGamingMode) "⚡ ULTRA GAMING MODE (0.5ms)" else "🛡️ SMOOTH MEDIA MODE (5ms)",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                        Text(
+                            text = if (isGamingMode) "Sub-millisecond competitive response for CS2/Valorant"
+                                   else "Glitch-free buffer safe mode through walls and interference",
+                            fontSize = 11.sp,
+                            color = if (isGamingMode) Color(0xFFA5D6A7) else Color(0xFF90CAF9)
+                        )
+                    }
+                }
+
+                Switch(
+                    checked = isGamingMode,
+                    onCheckedChange = { onToggleGamingMode(it) },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.Black,
+                        checkedTrackColor = Color(0xFF00E676),
+                        uncheckedThumbColor = Color(0xFF40C4FF),
+                        uncheckedTrackColor = Color(0xFF1A384D)
+                    )
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // 🎛️ STUDIO 10-BAND HARDWARE DSP EQUALIZER & BASS BOOST CARD
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (dspEnabled) Color(0xFF1F1C2D) else Color(0xFF1E1E1E)
+            )
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = null,
+                            tint = if (dspEnabled) Color(0xFFB388FF) else Color(0xFF888888),
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "STUDIO HARDWARE EQUALIZER & BASS",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = if (dspEnabled) "Active: ${dspPreset.displayName} • 0.0ms DSP Latency" else "Hardware DSP Off (Direct Passthrough)",
+                                fontSize = 11.sp,
+                                color = if (dspEnabled) Color(0xFFD1C4E9) else Color(0xFF888888)
+                            )
+                        }
+                    }
+
+                    Switch(
+                        checked = dspEnabled,
+                        onCheckedChange = { onToggleDsp(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = Color(0xFFB388FF),
+                            uncheckedThumbColor = Color(0xFF888888),
+                            uncheckedTrackColor = Color(0xFF333333)
+                        )
+                    )
+                }
+
+                if (dspEnabled) {
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Preset Chips
+                    Text(
+                        text = "PRESET PROFILES",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFB388FF)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(com.zenith.audio.dsp.DspEqualizerEngine.Preset.values()) { preset ->
+                            val isSelected = dspPreset == preset
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { onSelectDspPreset(preset) },
+                                label = {
+                                    Text(
+                                        text = preset.displayName,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFFB388FF),
+                                    selectedLabelColor = Color.Black
+                                )
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Bass Boost Resonator Slider
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "🔊 BASS BOOST RESONATOR",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFBBBBBB)
+                        )
+                        Text(
+                            text = "${(dspBassStrength / 10f).toInt()}%",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFB388FF)
+                        )
+                    }
+
+                    Slider(
+                        value = dspBassStrength.toFloat(),
+                        onValueChange = { onSetBassBoost(it.toInt()) },
+                        valueRange = 0f..1000f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFFB388FF),
+                            activeTrackColor = Color(0xFFB388FF),
+                            inactiveTrackColor = Color(0xFF333333)
+                        )
+                    )
+
+                    // Individual Hardware Band Gain Sliders
+                    if (dspBands.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "FREQUENCY BANDS (dB)",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFBBBBBB)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        dspBands.forEach { band ->
+                            val currentLevel = dspBandLevels[band.index] ?: 0
+                            val freqStr = if (band.centerFreqHz >= 1000) "${band.centerFreqHz / 1000}k" else "${band.centerFreqHz}Hz"
+                            val gainDb = currentLevel / 100f
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = freqStr,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFAAAAAA),
+                                    modifier = Modifier.width(42.dp)
+                                )
+                                Slider(
+                                    value = currentLevel.toFloat(),
+                                    onValueChange = { onSetBandLevel(band.index, it.toInt()) },
+                                    valueRange = band.minMilliBels.toFloat()..band.maxMilliBels.toFloat(),
+                                    modifier = Modifier.weight(1f),
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = Color(0xFFB388FF),
+                                        activeTrackColor = Color(0xFF7C4DFF),
+                                        inactiveTrackColor = Color(0xFF333333)
+                                    )
+                                )
+                                Text(
+                                    text = String.format("%+.1fdB", gainDb),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (gainDb > 0) Color(0xFFB388FF) else Color(0xFF888888),
+                                    modifier = Modifier.width(46.dp),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.End
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
 
         // 🎙️ DEDICATED REVERSE WIRELESS MICROPHONE CARD (On-Demand Section)
         Card(

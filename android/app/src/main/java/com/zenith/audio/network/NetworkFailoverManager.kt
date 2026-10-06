@@ -6,6 +6,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.util.Log
+import com.zenith.audio.usb.UsbIpResolver
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,14 +25,26 @@ class NetworkFailoverManager(
     private val _isUsbAvailable = MutableStateFlow(false)
     val isUsbAvailable: StateFlow<Boolean> = _isUsbAvailable.asStateFlow()
 
+    private val _activeDetectedIp = MutableStateFlow("192.168.1.9")
+    val activeDetectedIp: StateFlow<String> = _activeDetectedIp.asStateFlow()
+
+    private val _activeTransport = MutableStateFlow("Wi-Fi")
+    val activeTransport: StateFlow<String> = _activeTransport.asStateFlow()
+
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private var cachedWifiIp: String = "192.168.1.9"
-    private var activeTransport: String = "Wi-Fi"
+    private var isStreamingActive: Boolean = false
 
-    fun start(initialWifiIp: String) {
-        cachedWifiIp = initialWifiIp
+    fun start(initialWifiIp: String = "192.168.1.9") {
+        if (initialWifiIp.isNotBlank() && initialWifiIp != "127.0.0.1") {
+            cachedWifiIp = initialWifiIp
+            _activeDetectedIp.value = initialWifiIp
+        }
+
+        if (networkCallback != null) return // Already running
+
         connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val cm = connectivityManager ?: return
 
@@ -48,24 +61,38 @@ class NetworkFailoverManager(
                 _isWifiAvailable.value = hasWifi
                 _isUsbAvailable.value = hasUsbEthernet
 
-                // Automatic Seamless Failover logic:
-                if (hasUsbEthernet && activeTransport != "USB") {
-                    val usbIp = com.zenith.audio.usb.UsbIpResolver.resolveUsbHostIp()
-                    Log.i(TAG, "High-speed USB network detected -> Hot-switching to USB 0.5ms tunnel ($usbIp)")
-                    activeTransport = "USB"
-                    onFailoverTriggered("USB 0.5ms Direct", usbIp)
-                } else if (!hasUsbEthernet && hasWifi && activeTransport != "Wi-Fi") {
-                    Log.i(TAG, "USB disconnected -> Zero-drop hot-failover back to Wi-Fi ($cachedWifiIp)")
-                    activeTransport = "Wi-Fi"
-                    onFailoverTriggered("Wi-Fi", cachedWifiIp)
+                // Automatic Seamless Auto-Pilot Logic:
+                if (hasUsbEthernet) {
+                    val usbIp = UsbIpResolver.resolveUsbHostIp()
+                    Log.i(TAG, "High-speed USB tethering active -> Dynamic IP: $usbIp")
+                    _activeDetectedIp.value = usbIp
+                    _activeTransport.value = "USB 0.5ms Direct"
+
+                    if (isStreamingActive) {
+                        onFailoverTriggered("USB 0.5ms Direct", usbIp)
+                    }
+                } else if (hasWifi) {
+                    Log.i(TAG, "Standard Wi-Fi network active -> Dynamic IP: $cachedWifiIp")
+                    _activeDetectedIp.value = cachedWifiIp
+                    _activeTransport.value = "Wi-Fi"
+
+                    if (isStreamingActive && _activeTransport.value == "USB 0.5ms Direct") {
+                        onFailoverTriggered("Wi-Fi", cachedWifiIp)
+                    }
                 }
             }
 
             override fun onLost(network: Network) {
-                Log.w(TAG, "Network connection lost on interface. Checking fallback...")
-                if (activeTransport == "USB" && _isWifiAvailable.value) {
-                    activeTransport = "Wi-Fi"
-                    onFailoverTriggered("Wi-Fi", cachedWifiIp)
+                Log.w(TAG, "Network lost on interface. Checking fallback...")
+                if (_isUsbAvailable.value) {
+                    val usbIp = UsbIpResolver.resolveUsbHostIp()
+                    _activeDetectedIp.value = usbIp
+                    _activeTransport.value = "USB 0.5ms Direct"
+                    if (isStreamingActive) onFailoverTriggered("USB 0.5ms Direct", usbIp)
+                } else if (_isWifiAvailable.value) {
+                    _activeDetectedIp.value = cachedWifiIp
+                    _activeTransport.value = "Wi-Fi"
+                    if (isStreamingActive) onFailoverTriggered("Wi-Fi", cachedWifiIp)
                 }
             }
         }
@@ -73,10 +100,14 @@ class NetworkFailoverManager(
         try {
             cm.registerNetworkCallback(request, cb)
             networkCallback = cb
-            Log.i(TAG, "Network failover monitor registered")
+            Log.i(TAG, "Network failover monitor registered and active")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register network callback", e)
         }
+    }
+
+    fun setStreamingActive(active: Boolean) {
+        isStreamingActive = active
     }
 
     fun stop() {
@@ -91,11 +122,17 @@ class NetworkFailoverManager(
     fun updateWifiServerIp(ip: String) {
         if (ip.isNotBlank() && ip != "127.0.0.1") {
             cachedWifiIp = ip
+            if (!_isUsbAvailable.value) {
+                _activeDetectedIp.value = ip
+            }
         }
     }
 
     fun manualSwitch(transport: String, targetIp: String) {
-        activeTransport = transport
-        onFailoverTriggered(transport, targetIp)
+        _activeTransport.value = transport
+        _activeDetectedIp.value = targetIp
+        if (isStreamingActive) {
+            onFailoverTriggered(transport, targetIp)
+        }
     }
 }

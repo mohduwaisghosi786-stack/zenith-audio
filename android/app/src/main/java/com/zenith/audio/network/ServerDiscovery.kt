@@ -4,9 +4,11 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.util.Log
 import com.zenith.audio.protocol.ZapProtocol
+import com.zenith.audio.usb.UsbIpResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,6 +19,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.nio.ByteBuffer
 
 class ServerDiscovery(private val context: Context) {
@@ -28,6 +31,10 @@ class ServerDiscovery(private val context: Context) {
     private val _discoveredServers = MutableStateFlow<List<ZapProtocol.DiscoveredServer>>(emptyList())
     val discoveredServers: StateFlow<List<ZapProtocol.DiscoveredServer>> = _discoveredServers.asStateFlow()
 
+    private val _latestDiscoveredServer = MutableStateFlow<ZapProtocol.DiscoveredServer?>(null)
+    val latestDiscoveredServer: StateFlow<ZapProtocol.DiscoveredServer?> = _latestDiscoveredServer.asStateFlow()
+
+    private val scanTriggerChannel = Channel<Unit>(Channel.CONFLATED)
     private var discoveryJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO)
 
@@ -48,29 +55,30 @@ class ServerDiscovery(private val context: Context) {
                 socket = DatagramSocket(null).apply {
                     reuseAddress = true
                     broadcast = true
-                    soTimeout = 1500
+                    soTimeout = 1200
                     bind(InetSocketAddress(0)) // Ephemeral port to receive probe responses
                 }
 
                 val rxBuffer = ByteArray(1024)
                 val rxPacket = DatagramPacket(rxBuffer, rxBuffer.size)
                 val probeData = ZapProtocol.buildDiscoveryProbePacket()
-                val broadcastAddr = InetAddress.getByName("255.255.255.255")
-                val probePacket = DatagramPacket(probeData, probeData.size, broadcastAddr, DISCOVERY_PORT)
 
-                val serverMap = mutableMapOf<String, ZapProtocol.DiscoveredServer>()
+                val serverMap = mutableMapOf<String, Pair<ZapProtocol.DiscoveredServer, Long>>()
 
                 while (isActive) {
-                    // Send probe broadcast
-                    try {
-                        socket.send(probePacket)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to broadcast discovery probe: ${e.message}")
+                    val broadcastTargets = getBroadcastTargets()
+                    for (target in broadcastTargets) {
+                        try {
+                            val probePacket = DatagramPacket(probeData, probeData.size, target, DISCOVERY_PORT)
+                            socket.send(probePacket)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed probe send to $target: ${e.message}")
+                        }
                     }
 
-                    // Listen for beacons/responses
+                    // Listen for beacons/responses for 1.8 seconds
                     val windowStart = System.currentTimeMillis()
-                    while (System.currentTimeMillis() - windowStart < 2000L && isActive) {
+                    while (System.currentTimeMillis() - windowStart < 1800L && isActive) {
                         try {
                             rxPacket.length = rxBuffer.size
                             socket.receive(rxPacket)
@@ -87,9 +95,16 @@ class ServerDiscovery(private val context: Context) {
                                 )
                                 val server = ZapProtocol.parseDiscoveryBeacon(payloadBuffer, ip)
                                 if (server != null) {
-                                    serverMap[server.ip] = server
-                                    _discoveredServers.value = serverMap.values.toList()
-                                    Log.i(TAG, "Discovered server: ${server.serverName} at ${server.ip}:${server.port}")
+                                    val now = System.currentTimeMillis()
+                                    serverMap[server.ip] = Pair(server, now)
+                                    _latestDiscoveredServer.value = server
+
+                                    // Filter stale servers (> 12s)
+                                    val activeList = serverMap.values
+                                        .filter { now - it.second < 12_000L }
+                                        .map { it.first }
+                                    _discoveredServers.value = activeList
+                                    Log.i(TAG, "Discovered active Zenith host: ${server.serverName} at ${server.ip}:${server.port}")
                                 }
                             }
                         } catch (_: Exception) {
@@ -97,7 +112,11 @@ class ServerDiscovery(private val context: Context) {
                         }
                     }
 
-                    delay(3000L) // Scan cycle every 3 seconds
+                    // Wait 3s or wake immediately on manual scan trigger
+                    kotlinx.coroutines.selects.select<Unit> {
+                        scanTriggerChannel.onReceive { }
+                        scope.launch { delay(3000L) }.onJoin { }
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Discovery error", e)
@@ -110,8 +129,49 @@ class ServerDiscovery(private val context: Context) {
         }
     }
 
+    fun triggerFastScan() {
+        scanTriggerChannel.trySend(Unit)
+    }
+
     fun stopDiscovery() {
         discoveryJob?.cancel()
         discoveryJob = null
+    }
+
+    private fun getBroadcastTargets(): Set<InetAddress> {
+        val targets = mutableSetOf<InetAddress>()
+        try {
+            // 1. Global broadcast fallback
+            targets.add(InetAddress.getByName("255.255.255.255"))
+        } catch (_: Exception) {}
+
+        try {
+            // 2. Discover all local subnet broadcasts across Wi-Fi, Ethernet, and USB
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val netIf = interfaces.nextElement()
+                if (!netIf.isUp || netIf.isLoopback) continue
+
+                for (ifAddr in netIf.interfaceAddresses) {
+                    val bcast = ifAddr.broadcast
+                    if (bcast != null) {
+                        targets.add(bcast)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed enumerating network interfaces: ${e.message}")
+        }
+
+        try {
+            // 3. USB Tethering Host Gateway Direct Unicast
+            val usbHostIp = UsbIpResolver.resolveUsbHostIp()
+            if (usbHostIp.isNotBlank() && usbHostIp != "10.81.101.129" && usbHostIp != "127.0.0.1") {
+                targets.add(InetAddress.getByName(usbHostIp))
+            }
+            targets.add(InetAddress.getByName("10.81.101.129"))
+        } catch (_: Exception) {}
+
+        return targets
     }
 }
