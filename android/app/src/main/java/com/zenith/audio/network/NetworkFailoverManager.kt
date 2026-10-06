@@ -7,6 +7,12 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.util.Log
 import com.zenith.audio.usb.UsbIpResolver
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -104,6 +110,65 @@ class NetworkFailoverManager(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register network callback", e)
         }
+
+        startInterfacePoller()
+    }
+
+    private var pollerJob: kotlinx.coroutines.Job? = null
+    private val pollerScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+
+    private fun startInterfacePoller() {
+        pollerJob?.cancel()
+        pollerJob = pollerScope.launch {
+            while (isActive) {
+                checkPhysicalInterfaces()
+                delay(1200L)
+            }
+        }
+    }
+
+    private fun checkPhysicalInterfaces() {
+        var hasUsb = false
+        var usbHostIp = ""
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            for (intf in interfaces) {
+                if (intf.isUp && (intf.name.startsWith("rndis") || intf.name.startsWith("usb") || intf.name.startsWith("ncm"))) {
+                    for (addr in intf.inetAddresses) {
+                        if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                            hasUsb = true
+                            usbHostIp = UsbIpResolver.resolveUsbHostIp()
+                            break
+                        }
+                    }
+                }
+                if (hasUsb) break
+            }
+        } catch (_: Exception) {}
+
+        if (hasUsb) {
+            val wasUsb = _isUsbAvailable.value
+            _isUsbAvailable.value = true
+            val targetUsbIp = usbHostIp.ifBlank { "10.81.101.129" }
+            _activeDetectedIp.value = targetUsbIp
+            _activeTransport.value = "USB 0.5ms Direct"
+
+            if (!wasUsb && isStreamingActive) {
+                Log.i(TAG, "[Auto-Pilot] USB tethering attached -> Zero-drop hot-switching to USB $targetUsbIp")
+                onFailoverTriggered("USB 0.5ms Direct", targetUsbIp)
+            }
+        } else {
+            val wasUsb = _isUsbAvailable.value
+            _isUsbAvailable.value = false
+            if (wasUsb) {
+                Log.i(TAG, "[Auto-Pilot] USB tethering detached -> Falling back to Wi-Fi $cachedWifiIp")
+                _activeDetectedIp.value = cachedWifiIp
+                _activeTransport.value = "Wi-Fi"
+                if (isStreamingActive) {
+                    onFailoverTriggered("Wi-Fi", cachedWifiIp)
+                }
+            }
+        }
     }
 
     fun setStreamingActive(active: Boolean) {
@@ -111,6 +176,8 @@ class NetworkFailoverManager(
     }
 
     fun stop() {
+        pollerJob?.cancel()
+        pollerJob = null
         networkCallback?.let {
             try {
                 connectivityManager?.unregisterNetworkCallback(it)

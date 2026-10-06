@@ -103,10 +103,11 @@ class ServerDiscovery(private val context: Context) {
                                     serverMap[server.ip] = Pair(server, now)
                                     _latestDiscoveredServer.value = server
 
-                                    // Filter stale servers (> 12s)
+                                    // Filter stale servers (> 12s) and prioritize high-speed USB interface
                                     val activeList = serverMap.values
                                         .filter { now - it.second < 12_000L }
                                         .map { it.first }
+                                        .sortedByDescending { it.ip.startsWith("10.") || it.ip.startsWith("172.") }
                                     _discoveredServers.value = activeList
                                     Log.i(TAG, "Discovered active Zenith host: ${server.serverName} at ${server.ip}:${server.port}")
                                 }
