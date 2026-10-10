@@ -59,8 +59,9 @@ echo -e "${GREEN}[✓] Zenith server compiled successfully!${NC}"
 
 # 3. Install Binary
 echo -e "\n${YELLOW}[3/4] Installing zenith-server binary...${NC}"
+systemctl --user stop zenith-server.service 2>/dev/null || true
 mkdir -p "$HOME/.local/bin"
-cp "server/bin/zenith-server" "$HOME/.local/bin/zenith-server"
+cp -f "server/bin/zenith-server" "$HOME/.local/bin/zenith-server"
 chmod +x "$HOME/.local/bin/zenith-server"
 
 # Add ~/.local/bin to PATH in bashrc / zshrc if missing
