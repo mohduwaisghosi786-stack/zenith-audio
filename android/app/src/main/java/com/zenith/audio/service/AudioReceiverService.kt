@@ -38,7 +38,7 @@ class AudioReceiverService : Service() {
         const val EXTRA_PORT = "EXTRA_PORT"
         const val EXTRA_BITRATE = "EXTRA_BITRATE"
 
-        private const val CHANNEL_ID = "zenith_audio_stream_channel_v4"
+        private const val CHANNEL_ID = "zenith_audio_stream_channel_v5"
         const val NOTIFICATION_ID = 1001
     }
 
@@ -309,17 +309,19 @@ class AudioReceiverService : Service() {
                 manager.deleteNotificationChannel("zenith_audio_stream_channel")
                 manager.deleteNotificationChannel("zenith_audio_stream_channel_v2")
                 manager.deleteNotificationChannel("zenith_audio_stream_channel_v3")
+                manager.deleteNotificationChannel("zenith_audio_stream_channel_v4")
             } catch (_: Exception) {}
 
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Zenith Studio Controls",
-                NotificationManager.IMPORTANCE_LOW
+                "Zenith Audio Active Controls",
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Tactile quick-toggle controls for Mic, Stream, and Power"
+                description = "Live Zenith Audio pinned streaming controls"
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 setSound(null, null)
                 enableVibration(false)
+                enableLights(false)
                 setShowBadge(false)
             }
             manager.createNotificationChannel(channel)
@@ -340,6 +342,9 @@ class AudioReceiverService : Service() {
             isMicOn -> "⚪ Standby  •  🎤 Mic Active"
             else -> "⚪ Standby  •  🔇 Mic Muted"
         }
+
+        val badgeText = if (isConnected) "LIVE" else if (isConnecting) "SYNCING" else "STANDBY"
+        val badgeColor = if (isConnected) 0xFF00E676.toInt() else if (isConnecting) 0xFFFFB300.toInt() else 0xFF9E9E9E.toInt()
 
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -389,10 +394,11 @@ class AudioReceiverService : Service() {
 
         // Custom Compact RemoteViews
         val compactView = RemoteViews(packageName, R.layout.layout_notification_compact).apply {
-            setTextViewText(R.id.notif_title, "Zenith Studio")
+            setTextViewText(R.id.notif_title, "Zenith Studio Master")
             setTextViewText(R.id.notif_status_text, statusText)
+            setTextViewText(R.id.notif_badge, badgeText)
+            setTextColor(R.id.notif_badge, badgeColor)
 
-            // Dynamic background and icon for Mic button
             setInt(
                 R.id.notif_btn_mic,
                 "setBackgroundResource",
@@ -403,7 +409,6 @@ class AudioReceiverService : Service() {
                 if (isMicOn) R.drawable.ic_notif_mic_on else R.drawable.ic_notif_mic_off
             )
 
-            // Dynamic background and icon for Connect button
             setInt(
                 R.id.notif_btn_connect,
                 "setBackgroundResource",
@@ -414,7 +419,6 @@ class AudioReceiverService : Service() {
                 if (isStreamingActive) R.drawable.ic_notif_disconnect else R.drawable.ic_notif_connect
             )
 
-            // Close button
             setInt(R.id.notif_btn_close, "setBackgroundResource", R.drawable.bg_notif_btn_close)
             setImageViewResource(R.id.notif_btn_close, R.drawable.ic_notif_stop)
 
@@ -427,15 +431,8 @@ class AudioReceiverService : Service() {
         val expandedView = RemoteViews(packageName, R.layout.layout_notification_expanded).apply {
             setTextViewText(R.id.notif_exp_title, "Zenith Studio Master")
             setTextViewText(R.id.notif_exp_status, statusText)
-
-            setTextViewText(
-                R.id.notif_exp_badge,
-                if (isConnected) "LIVE" else if (isConnecting) "SYNCING" else "STANDBY"
-            )
-            setTextColor(
-                R.id.notif_exp_badge,
-                if (isConnected) 0xFF00E676.toInt() else if (isConnecting) 0xFFFFB300.toInt() else 0xFF9E9E9E.toInt()
-            )
+            setTextViewText(R.id.notif_exp_badge, badgeText)
+            setTextColor(R.id.notif_exp_badge, badgeColor)
 
             // Mic tile
             setInt(
@@ -501,23 +498,9 @@ class AudioReceiverService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .addAction(
-                if (isMicOn) R.drawable.ic_notif_mic_off else R.drawable.ic_notif_mic_on,
-                if (isMicOn) "Mute Mic" else "Unmute Mic",
-                micPendingIntent
-            )
-            .addAction(
-                if (isStreamingActive) R.drawable.ic_notif_disconnect else R.drawable.ic_notif_connect,
-                if (isStreamingActive) "Disconnect" else "Connect",
-                connectPendingIntent
-            )
-            .addAction(
-                R.drawable.ic_notif_stop,
-                "Force Close",
-                closePendingIntent
-            )
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
 
         return builder.build()
     }
