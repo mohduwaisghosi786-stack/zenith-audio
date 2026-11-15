@@ -45,6 +45,11 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        var instance: MainActivity? = null
+            private set
+    }
+
     private var audioService: AudioReceiverService? = null
     private var isBound = false
     private val metricsState = mutableStateOf(StreamMetrics())
@@ -182,6 +187,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        instance = this
         requestRequiredPermissions()
 
         try {
@@ -308,6 +314,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (instance == this) {
+            instance = null
+        }
         if (isBound) {
             unbindService(serviceConnection)
             isBound = false

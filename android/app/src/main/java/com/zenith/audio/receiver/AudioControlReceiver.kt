@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Process
 import android.util.Log
+import com.zenith.audio.MainActivity
 import com.zenith.audio.service.AudioReceiverService
 import kotlin.system.exitProcess
 
@@ -35,23 +36,37 @@ class AudioControlReceiver : BroadcastReceiver() {
                 service?.toggleStreamingFromNotification()
             }
             ACTION_FORCE_STOP -> {
-                Log.w(TAG, "Force Stop requested! Dismissing notification and terminating process.")
+                Log.w(TAG, "Force Stop requested! Terminating all services, activities, and process.")
+                // 1. Collapse status bar / notification shade
+                try {
+                    @Suppress("DEPRECATION")
+                    context.sendBroadcast(Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS))
+                } catch (_: Exception) {}
+
+                // 2. Stop service cleanly & remove foreground notification
+                try {
+                    service?.forceShutdown()
+                } catch (_: Exception) {}
+
+                // 3. Explicitly cancel notification
                 try {
                     val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                     nm.cancel(AudioReceiverService.NOTIFICATION_ID)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not cancel notification: ${e.message}")
-                }
+                } catch (_: Exception) {}
 
+                // 4. Finish all activities if MainActivity is open
                 try {
-                    service?.forceShutdown()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not shutdown service cleanly: ${e.message}")
-                }
+                    MainActivity.instance?.finishAffinity()
+                } catch (_: Exception) {}
 
-                // Immediate hard kill so the service and app stop completely
-                Process.killProcess(Process.myPid())
-                exitProcess(0)
+                // 5. Allow Binder call to reach system_server before killing process
+                Thread {
+                    try {
+                        Thread.sleep(150)
+                    } catch (_: Exception) {}
+                    Process.killProcess(Process.myPid())
+                    exitProcess(0)
+                }.start()
             }
         }
     }

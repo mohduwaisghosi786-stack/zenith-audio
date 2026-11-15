@@ -38,7 +38,7 @@ class AudioReceiverService : Service() {
         const val EXTRA_PORT = "EXTRA_PORT"
         const val EXTRA_BITRATE = "EXTRA_BITRATE"
 
-        private const val CHANNEL_ID = "zenith_audio_stream_channel_v3"
+        private const val CHANNEL_ID = "zenith_audio_stream_channel_v4"
         const val NOTIFICATION_ID = 1001
     }
 
@@ -226,6 +226,10 @@ class AudioReceiverService : Service() {
             if (it.isHeld) it.release()
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
+        try {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {}
         stopSelf()
     }
 
@@ -304,14 +308,15 @@ class AudioReceiverService : Service() {
             try {
                 manager.deleteNotificationChannel("zenith_audio_stream_channel")
                 manager.deleteNotificationChannel("zenith_audio_stream_channel_v2")
+                manager.deleteNotificationChannel("zenith_audio_stream_channel_v3")
             } catch (_: Exception) {}
 
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Zenith Audio Controls",
+                "Zenith Studio Controls",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Quick toggle controls for Microphone, Connection, and Force Close"
+                description = "Tactile quick-toggle controls for Mic, Stream, and Power"
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 setSound(null, null)
                 enableVibration(false)
@@ -329,11 +334,11 @@ class AudioReceiverService : Service() {
         val isStreamingActive = isConnected || isConnecting
 
         val statusText = when {
-            isConnected && isMicOn -> "🟢 Connected  •  🎤 Mic ON"
-            isConnected && !isMicOn -> "🟢 Connected  •  🔇 Mic OFF"
-            isConnecting -> "⏳ Connecting to host..."
-            isMicOn -> "⚪ Disconnected  •  🎤 Mic ON"
-            else -> "⚪ Disconnected  •  🔇 Mic OFF"
+            isConnected && isMicOn -> "🟢 Connected  •  🎤 Mic Active"
+            isConnected && !isMicOn -> "🟢 Connected  •  🔇 Mic Muted"
+            isConnecting -> "⏳ Connecting to PC..."
+            isMicOn -> "⚪ Standby  •  🎤 Mic Active"
+            else -> "⚪ Standby  •  🔇 Mic Muted"
         }
 
         val launchIntent = Intent(this, MainActivity::class.java).apply {
@@ -349,6 +354,7 @@ class AudioReceiverService : Service() {
         // 1. Mic PendingIntent
         val micIntent = Intent(this, AudioControlReceiver::class.java).apply {
             action = AudioControlReceiver.ACTION_TOGGLE_MIC
+            setPackage(packageName)
         }
         val micPendingIntent = PendingIntent.getBroadcast(
             this,
@@ -360,6 +366,7 @@ class AudioReceiverService : Service() {
         // 2. Connect / Disconnect PendingIntent
         val connectIntent = Intent(this, AudioControlReceiver::class.java).apply {
             action = AudioControlReceiver.ACTION_TOGGLE_CONNECT
+            setPackage(packageName)
         }
         val connectPendingIntent = PendingIntent.getBroadcast(
             this,
@@ -371,6 +378,7 @@ class AudioReceiverService : Service() {
         // 3. Force Close PendingIntent
         val closeIntent = Intent(this, AudioControlReceiver::class.java).apply {
             action = AudioControlReceiver.ACTION_FORCE_STOP
+            setPackage(packageName)
         }
         val closePendingIntent = PendingIntent.getBroadcast(
             this,
@@ -381,17 +389,33 @@ class AudioReceiverService : Service() {
 
         // Custom Compact RemoteViews
         val compactView = RemoteViews(packageName, R.layout.layout_notification_compact).apply {
-            setTextViewText(R.id.notif_title, "Zenith Audio")
+            setTextViewText(R.id.notif_title, "Zenith Studio")
             setTextViewText(R.id.notif_status_text, statusText)
 
+            // Dynamic background and icon for Mic button
+            setInt(
+                R.id.notif_btn_mic,
+                "setBackgroundResource",
+                if (isMicOn) R.drawable.bg_notif_btn_mic_on else R.drawable.bg_notif_btn_mic_off
+            )
             setImageViewResource(
                 R.id.notif_btn_mic,
                 if (isMicOn) R.drawable.ic_notif_mic_on else R.drawable.ic_notif_mic_off
+            )
+
+            // Dynamic background and icon for Connect button
+            setInt(
+                R.id.notif_btn_connect,
+                "setBackgroundResource",
+                if (isStreamingActive) R.drawable.bg_notif_btn_stream_on else R.drawable.bg_notif_btn_stream_off
             )
             setImageViewResource(
                 R.id.notif_btn_connect,
                 if (isStreamingActive) R.drawable.ic_notif_disconnect else R.drawable.ic_notif_connect
             )
+
+            // Close button
+            setInt(R.id.notif_btn_close, "setBackgroundResource", R.drawable.bg_notif_btn_close)
             setImageViewResource(R.id.notif_btn_close, R.drawable.ic_notif_stop)
 
             setOnClickPendingIntent(R.id.notif_btn_mic, micPendingIntent)
@@ -401,18 +425,24 @@ class AudioReceiverService : Service() {
 
         // Custom Expanded RemoteViews
         val expandedView = RemoteViews(packageName, R.layout.layout_notification_expanded).apply {
-            setTextViewText(R.id.notif_exp_title, "Zenith Audio")
+            setTextViewText(R.id.notif_exp_title, "Zenith Studio Master")
             setTextViewText(R.id.notif_exp_status, statusText)
 
             setTextViewText(
                 R.id.notif_exp_badge,
-                if (isConnected) "LIVE" else if (isConnecting) "CONNECTING" else "IDLE"
+                if (isConnected) "LIVE" else if (isConnecting) "SYNCING" else "STANDBY"
             )
             setTextColor(
                 R.id.notif_exp_badge,
                 if (isConnected) 0xFF00E676.toInt() else if (isConnecting) 0xFFFFB300.toInt() else 0xFF9E9E9E.toInt()
             )
 
+            // Mic tile
+            setInt(
+                R.id.notif_exp_ic_mic,
+                "setBackgroundResource",
+                if (isMicOn) R.drawable.bg_notif_btn_mic_on else R.drawable.bg_notif_btn_mic_off
+            )
             setImageViewResource(
                 R.id.notif_exp_ic_mic,
                 if (isMicOn) R.drawable.ic_notif_mic_on else R.drawable.ic_notif_mic_off
@@ -423,9 +453,15 @@ class AudioReceiverService : Service() {
             )
             setTextColor(
                 R.id.notif_exp_txt_mic,
-                if (isMicOn) 0xFF00E676.toInt() else 0xFFFF5252.toInt()
+                if (isMicOn) 0xFF00E676.toInt() else 0xFFFF3D71.toInt()
             )
 
+            // Connect tile
+            setInt(
+                R.id.notif_exp_ic_connect,
+                "setBackgroundResource",
+                if (isStreamingActive) R.drawable.bg_notif_btn_stream_on else R.drawable.bg_notif_btn_stream_off
+            )
             setImageViewResource(
                 R.id.notif_exp_ic_connect,
                 if (isStreamingActive) R.drawable.ic_notif_disconnect else R.drawable.ic_notif_connect
@@ -436,12 +472,22 @@ class AudioReceiverService : Service() {
             )
             setTextColor(
                 R.id.notif_exp_txt_connect,
-                if (isStreamingActive) 0xFFFFB300.toInt() else 0xFF00E676.toInt()
+                if (isStreamingActive) 0xFFFFB300.toInt() else 0xFF00E5FF.toInt()
             )
 
+            // Close tile
+            setInt(R.id.notif_exp_ic_close, "setBackgroundResource", R.drawable.bg_notif_btn_close)
+            setImageViewResource(R.id.notif_exp_ic_close, R.drawable.ic_notif_stop)
+
+            // Click listeners on both container tile and button
             setOnClickPendingIntent(R.id.notif_exp_btn_mic, micPendingIntent)
+            setOnClickPendingIntent(R.id.notif_exp_ic_mic, micPendingIntent)
+
             setOnClickPendingIntent(R.id.notif_exp_btn_connect, connectPendingIntent)
+            setOnClickPendingIntent(R.id.notif_exp_ic_connect, connectPendingIntent)
+
             setOnClickPendingIntent(R.id.notif_exp_btn_close, closePendingIntent)
+            setOnClickPendingIntent(R.id.notif_exp_ic_close, closePendingIntent)
         }
 
         val smallIconRes = if (isMicOn) R.drawable.ic_notif_mic_on else R.drawable.ic_launcher_foreground
