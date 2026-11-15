@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="64dp"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp">
+
+    <!-- App Icon / Indicator -->
+    <ImageView
+        android:id="@+id/notif_app_icon"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:src="@drawable/ic_launcher_foreground"
+        android:contentDescription="Zenith" />
+
+    <!-- Text Information -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="6dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/notif_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Zenith Audio"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <TextView
+            android:id="@+id/notif_status_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="🟢 Connected • 🎤 Mic ON"
+            android:textColor="#CFD8DC"
+            android:textSize="12sp"
+            android:maxLines="1"
+            android:ellipsize="end" />
+    </LinearLayout>
+
+    <!-- Three Large Interactive Action Icons -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <!-- 1. Mic Toggle Icon Button -->
+        <ImageButton
+            android:id="@+id/notif_btn_mic"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_notif_mic_on"
+            android:scaleType="centerInside"
+            android:padding="6dp"
+            android:contentDescription="Toggle Mic" />
+
+        <!-- 2. Connect / Disconnect Toggle Icon Button -->
+        <ImageButton
+            android:id="@+id/notif_btn_connect"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="6dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_notif_connect"
+            android:scaleType="centerInside"
+            android:padding="6dp"
+            android:contentDescription="Connect or Disconnect" />
+
+        <!-- 3. Force Close Icon Button -->
+        <ImageButton
+            android:id="@+id/notif_btn_close"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="6dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_notif_stop"
+            android:scaleType="centerInside"
+            android:padding="6dp"
+            android:contentDescription="Force Close" />
+    </LinearLayout>
+
+</LinearLayout>
